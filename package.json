@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+     "fix:g2b-urls": "node fix-g2b-detail-urls.js"
   },
   "dependencies": {
     "axios": "^1.7.0",
