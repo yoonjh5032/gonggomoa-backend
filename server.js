@@ -9,9 +9,9 @@ const rateLimit = require('express-rate-limit');
 const { connectDB } = require('./config/db');
 const Notice = require('./models/Notice');
 const User = require('./models/User');
-
 const app  = express();
 const PORT = process.env.PORT || 4000;
+const scheduler = require('./services/scheduler');
 
 app.set('trust proxy', 1);
 
@@ -101,6 +101,7 @@ connectDB().then(async () => {
 
   app.listen(PORT, () => {
     console.log(`✅ 공고모아 API 서버 시작: http://localhost:${PORT}`);
+    scheduler.start();
   });
 }).catch((err) => {
   console.error('❌ 서버 시작 실패:', err.message);
