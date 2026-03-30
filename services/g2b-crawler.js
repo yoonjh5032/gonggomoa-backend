@@ -26,8 +26,9 @@ function formatBudget(won) {
 
 function buildG2bUrl(bidNtceNo, bidNtceOrd) {
   if (!bidNtceNo) return '';
-  return `https://www.g2b.go.kr:8101/ep/tbid/tbidFwd.do?bidNtceNo=${encodeURIComponent(bidNtceNo)}&bidNtceOrd=${encodeURIComponent(bidNtceOrd || '00')}`;
+  return `https://www.g2b.go.kr/link/PNPE027_01/single/?bidPbancNo=${encodeURIComponent(bidNtceNo)}&bidPbancOrd=${encodeURIComponent(bidNtceOrd || '000')}`;
 }
+
 
 function parseDate(str) {
   if (!str) return null;
