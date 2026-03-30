@@ -28,7 +28,6 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin(origin, cb) {
-    // 서버-서버 호출, 헬스체크, same-origin 등 origin 없는 요청 허용
     if (!origin) return cb(null, true);
 
     const normalizedOrigin = String(origin).replace(/\/$/, '');
@@ -50,8 +49,6 @@ const corsOptions = {
 };
 
 app.use(cors(corsOptions));
-
-// preflight 요청 처리
 app.options(/.*/, cors(corsOptions));
 
 app.use('/api/', rateLimit({
@@ -61,10 +58,10 @@ app.use('/api/', rateLimit({
 }));
 
 /* ── 라우트 ── */
-app.use('/api/auth',      require('./routes/auth'));
-app.use('/api/notices',   require('./routes/notices'));
-//app.use('/api/inquiries', require('./routes/inquiries'));   //
-//app.use('/api/admin',     require('./routes/admin'));   //
+app.use('/api/auth',    require('./routes/auth'));
+app.use('/api/notices', require('./routes/notices'));
+// app.use('/api/inquiries', require('./routes/inquiries'));
+// app.use('/api/admin',     require('./routes/admin'));
 app.use('/api/analytics', require('./routes/analytics'));
 
 app.get('/api/health', (_, res) => {
@@ -77,7 +74,7 @@ app.use((err, req, res, _next) => {
   res.status(err.status || 500).json({ error: err.message || '서버 에러' });
 });
 
-/* ── DB 연결 → 필요 시 notices 초기화 → 서버 시작 → 스케줄러 ── */
+/* ── DB 연결 → 필요 시 notices 초기화 → 서버 시작 ── */
 connectDB().then(async () => {
   if (process.env.RESET_NOTICES_ON_START === 'true') {
     try {
@@ -101,12 +98,6 @@ connectDB().then(async () => {
 
   app.listen(PORT, () => {
     console.log(`✅ 공고모아 API 서버 시작: http://localhost:${PORT}`);
-
-    if (process.env.CRON_ENABLED === 'true') {
-      const scheduler = require('./services/scheduler');
-      scheduler.start();
-      console.log('⏰ 크론 스케줄러 활성화 (KST 08:00~19:00 매 분)');
-    }
   });
 }).catch((err) => {
   console.error('❌ 서버 시작 실패:', err.message);
