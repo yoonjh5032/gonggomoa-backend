@@ -2,6 +2,31 @@
 const router = require('express').Router();
 const { Op, fn, col } = require('sequelize');
 const Notice = require('../models/Notice');
+const CALENDAR_CACHE_TTL = 1000 * 60 * 2; // 2분 캐시
+const calendarCache = new Map();
+
+function getCalendarCacheKey(year, month) {
+  return year + '-' + String(month).padStart(2, '0');
+}
+
+function getCachedCalendar(key) {
+  const entry = calendarCache.get(key);
+  if (!entry) return null;
+
+  if (Date.now() - entry.createdAt > CALENDAR_CACHE_TTL) {
+    calendarCache.delete(key);
+    return null;
+  }
+
+  return entry.data;
+}
+
+function setCachedCalendar(key, data) {
+  calendarCache.set(key, {
+    createdAt: Date.now(),
+    data
+  });
+}
 
 function buildActiveNoticeCondition(now = new Date()) {
   return {
@@ -119,18 +144,37 @@ router.get('/stats', async (req, res) => {
 ════════════════════════════════════════════════ */
 router.get('/calendar/:year/:month', async (req, res) => {
   try {
-    const y = parseInt(req.params.year);
-    const m = parseInt(req.params.month);
+    const y = parseInt(req.params.year, 10);
+    const m = parseInt(req.params.month, 10);
+
     if (!y || !m || m < 1 || m > 12) {
       return res.status(400).json({ error: '올바른 연/월을 입력하세요.' });
     }
 
+    const cacheKey = getCalendarCacheKey(y, m);
+    const cached = getCachedCalendar(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
     const from = new Date(y, m - 1, 1);
     const to   = new Date(y, m, 0, 23, 59, 59, 999);
+
     const now = new Date();
     const effectiveFrom = from > now ? from : now;
 
     const list = await Notice.findAll({
+      attributes: [
+        'id',
+        'title',
+        'notice_type',
+        'issuing_org',
+        'budget_formatted',
+        'closing_at',
+        'published_at',
+        'source_system',
+        'detail_url'
+      ],
       where: {
         closing_at: { [Op.between]: [effectiveFrom, to] }
       },
@@ -139,15 +183,26 @@ router.get('/calendar/:year/:month', async (req, res) => {
     });
 
     const grouped = {};
+
     list.forEach(n => {
       const ds = new Date(n.closing_at).toISOString().slice(0, 10);
+
       if (!grouped[ds]) grouped[ds] = [];
+
       grouped[ds].push({
-        ...n,
-        closing_at:   new Date(n.closing_at).toISOString(),
-        published_at: n.published_at ? new Date(n.published_at).toISOString() : null
+        id: n.id,
+        title: n.title,
+        notice_type: n.notice_type,
+        issuing_org: n.issuing_org,
+        budget_formatted: n.budget_formatted,
+        closing_at: n.closing_at ? new Date(n.closing_at).toISOString() : null,
+        published_at: n.published_at ? new Date(n.published_at).toISOString() : null,
+        source_system: n.source_system,
+        detail_url: n.detail_url || ''
       });
     });
+
+    setCachedCalendar(cacheKey, grouped);
 
     res.json(grouped);
   } catch (err) {
