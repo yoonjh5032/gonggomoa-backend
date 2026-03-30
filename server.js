@@ -61,7 +61,7 @@ app.use('/api/', rateLimit({
 app.use('/api/auth',    require('./routes/auth'));
 app.use('/api/notices', require('./routes/notices'));
 app.use('/api/inquiries', require('./routes/inquiries'));
-// app.use('/api/admin',     require('./routes/admin'));
+app.use('/api/admin',     require('./routes/admin'));
 app.use('/api/analytics', require('./routes/analytics'));
 
 
