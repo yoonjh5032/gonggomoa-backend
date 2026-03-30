@@ -8,6 +8,7 @@ const helmet    = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { connectDB } = require('./config/db');
 const Notice = require('./models/Notice');
+const User = require('./models/User');
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -61,6 +62,16 @@ connectDB().then(async () => {
       console.error('❌ notices 초기화 실패:', err.message);
       process.exit(1);
     }
+  }
+
+  try {
+    const [updatedCount] = await User.update(
+      { role: 'admin' },
+      { where: { email: 'yacoomo@kakao.com' } }
+    );
+    console.log(`✅ yacoomo@kakao.com 관리자 권한 적용 완료 (변경 수: ${updatedCount})`);
+  } catch (err) {
+    console.error('❌ 관리자 권한 적용 실패:', err.message);
   }
 
   app.listen(PORT, () => {
