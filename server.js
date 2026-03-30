@@ -18,19 +18,41 @@ app.use(helmet());
 app.use(express.json({ limit: '2mb' }));
 
 const allowedOrigins = [
+  'https://gonggomoa.kr',
+  'https://www.gonggomoa.kr',
   process.env.FRONTEND_URL,
   'http://localhost:3000',
   'http://localhost:5500',
   'http://127.0.0.1:5500'
 ].filter(Boolean);
 
-app.use(cors({
+const corsOptions = {
   origin(origin, cb) {
-    if (!origin || allowedOrigins.some(o => origin.startsWith(o))) return cb(null, true);
-    cb(null, false);
+    // 서버-서버 호출, 헬스체크, same-origin 등 origin 없는 요청 허용
+    if (!origin) return cb(null, true);
+
+    const normalizedOrigin = String(origin).replace(/\/$/, '');
+
+    const isAllowed = allowedOrigins.some((o) => {
+      const normalizedAllowed = String(o).replace(/\/$/, '');
+      return normalizedOrigin === normalizedAllowed;
+    });
+
+    if (isAllowed) return cb(null, true);
+
+    console.warn('⛔ CORS 차단:', origin);
+    return cb(null, false);
   },
-  credentials: true
-}));
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+
+// preflight 요청 처리
+app.options(/.*/, cors(corsOptions));
 
 app.use('/api/', rateLimit({
   windowMs: 60 * 1000,
@@ -41,11 +63,13 @@ app.use('/api/', rateLimit({
 /* ── 라우트 ── */
 app.use('/api/auth',      require('./routes/auth'));
 app.use('/api/notices',   require('./routes/notices'));
-//app.use('/api/inquiries', require('./routes/inquiries'));
-//app.use('/api/admin',     require('./routes/admin'));
+app.use('/api/inquiries', require('./routes/inquiries'));   //
+app.use('/api/admin',     require('./routes/admin'));   //
 app.use('/api/analytics', require('./routes/analytics'));
 
-app.get('/api/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
+app.get('/api/health', (_, res) => {
+  res.json({ status: 'ok', time: new Date().toISOString() });
+});
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err, req, res, _next) => {
@@ -84,4 +108,7 @@ connectDB().then(async () => {
       console.log('⏰ 크론 스케줄러 활성화 (KST 08:00~19:00 매 분)');
     }
   });
+}).catch((err) => {
+  console.error('❌ 서버 시작 실패:', err.message);
+  process.exit(1);
 });
