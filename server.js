@@ -60,9 +60,10 @@ app.use('/api/', rateLimit({
 /* ── 라우트 ── */
 app.use('/api/auth',    require('./routes/auth'));
 app.use('/api/notices', require('./routes/notices'));
-// app.use('/api/inquiries', require('./routes/inquiries'));
+app.use('/api/inquiries', require('./routes/inquiries'));
 // app.use('/api/admin',     require('./routes/admin'));
 app.use('/api/analytics', require('./routes/analytics'));
+
 
 app.get('/api/health', (_, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
