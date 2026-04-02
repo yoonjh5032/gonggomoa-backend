@@ -36,9 +36,9 @@ async function connectDB() {
     const allowAlter = process.env.DB_SYNC_ALTER === 'true' && process.env.NODE_ENV !== 'production';
     await sequelize.sync(allowAlter ? { alter: true } : {});
     console.log(allowAlter ? '✅ 테이블 동기화 완료 (alter 적용)' : '✅ 테이블 동기화 완료');
-  } catch (err) {
+   } catch (err) {
     console.error('❌ MySQL 연결 실패:', err.message);
-    process.exit(1);
+    throw err;
   }
 }
 
