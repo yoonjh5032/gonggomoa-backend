@@ -29,5 +29,10 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  {
+  "scripts": {
+    "refresh:seoul-contract": "node scripts/refresh-seoul-contract.js"
   }
+}
 }
