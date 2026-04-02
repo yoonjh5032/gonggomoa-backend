@@ -1,0 +1,33 @@
+{
+  "name": "gonggomoa-backend",
+  "version": "1.1.0",
+  "description": "공고모아 - 입찰공고 통합 검색 백엔드 (MySQL)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "fix:g2b-urls": "node fix-g2b-detail-urls.js",
+    "purge:expired-notices": "node purge-expired-notices.js"
+
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.11.0",
+    "node-cron": "^3.0.3",
+    "sequelize": "^6.37.0",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
