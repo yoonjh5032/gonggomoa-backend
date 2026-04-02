@@ -1,227 +1,177 @@
 const cron = require('node-cron');
-const { Op } = require('sequelize');
 const g2bCrawler = require('./g2b-crawler');
 const seoulContractCrawler = require('./seoul-contract-crawler');
 const Notice = require('../models/Notice');
 
-const DEFAULT_ENABLED_COLLECTOR_SOURCES = ['g2b_api', 'seoul_contract'];
-const VALID_SOURCES = new Set(DEFAULT_ENABLED_COLLECTOR_SOURCES);
+const ENABLED_COLLECTOR_SOURCES = (
+  process.env.ENABLED_COLLECTOR_SOURCES || 'g2b_api,seoul_contract'
+)
+  .split(',')
+  .map((v) => v.trim())
+  .filter(Boolean);
 
-const ENABLED_COLLECTOR_SOURCES = (() => {
-  const raw = String(
-    process.env.ENABLED_COLLECTOR_SOURCES ||
-    DEFAULT_ENABLED_COLLECTOR_SOURCES.join(',')
-  );
-
-  const parsed = raw
-    .split(',')
-    .map(v => String(v || '').trim())
-    .filter(Boolean)
-    .filter(v => VALID_SOURCES.has(v));
-
-  return parsed.length ? parsed : DEFAULT_ENABLED_COLLECTOR_SOURCES.slice();
-})();
-
-let isRunning = false;
-
-function getEnabledCollectorSources() {
-  return ENABLED_COLLECTOR_SOURCES.slice();
-}
+let runningMinuteJob = false;
+let runningSeoulContractJob = false;
+let runningPurgeJob = false;
 
 function isSourceEnabled(source) {
   return ENABLED_COLLECTOR_SOURCES.includes(source);
+}
+
+function getEnabledCollectorSources() {
+  return ENABLED_COLLECTOR_SOURCES;
 }
 
 function getKstNow() {
   return new Date(Date.now() + 9 * 60 * 60 * 1000);
 }
 
-function getSeoulContractMinuteInterval() {
-  return Math.max(parseInt(process.env.SEOUL_CONTRACT_MINUTE_INTERVAL || '10', 10), 1);
+function formatKstDate(date = getKstNow()) {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 async function purgeExpiredNotices() {
-  const now = new Date();
-  const deleted = await Notice.destroy({
-    where: {
-      closing_at: { [Op.lt]: now }
-    }
-  });
+  if (runningPurgeJob) return;
+  runningPurgeJob = true;
 
-  if (deleted > 0) {
-    console.log(`[정리] 마감 지난 공고 ${deleted}건 삭제 완료`);
-  } else {
-    console.log('[정리] 삭제할 마감 종료 공고 없음');
-  }
+  try {
+    const deleted = await Notice.destroy({
+      where: {
+        closing_at: {
+          [Notice.sequelize.Sequelize.Op.lt]: new Date(),
+        },
+      },
+    });
 
-  return deleted;
-}
-
-async function runMinuteCollectors(nowKst) {
-  if (isSourceEnabled('g2b_api')) {
-    console.log('[스케줄러] 나라장터 증분 수집 시작');
-    await g2bCrawler.crawl({ minuteMode: true });
-  }
-
-  if (isSourceEnabled('seoul_contract')) {
-    const minute = nowKst.getUTCMinutes();
-    const interval = getSeoulContractMinuteInterval();
-
-    if (minute % interval === 0) {
-      console.log(`[스케줄러] 서울 계약마당 증분 수집 시작 (매 ${interval}분 주기)`);
-      await seoulContractCrawler.crawl({ minuteMode: true });
-    } else {
-      console.log(`[스케줄러] 서울 계약마당 대기 — ${interval}분 주기 미도달`);
-    }
+    console.log(`[스케줄러] 만료 공고 삭제 완료 — ${deleted}건`);
+  } catch (err) {
+    console.error('[스케줄러] 만료 공고 삭제 실패', err.message);
+  } finally {
+    runningPurgeJob = false;
   }
 }
 
-async function runCrawl() {
-  if (isRunning) {
-    console.log('[스케줄러] 이전 작업이 진행 중, 건너뜀');
+async function runMinuteCollectors() {
+  if (runningMinuteJob) {
+    console.log('[스케줄러] 분단위 수집 이미 실행 중, 건너뜀');
     return;
   }
 
-  isRunning = true;
+  const kst = getKstNow();
+  const hour = kst.getUTCHours();
+
+  // 기존 정책 유지: 분단위 수집은 08~19시만
+  if (hour < 8 || hour >= 19) {
+    console.log(`[스케줄러] KST ${hour}시 — 수집 시간 범위 밖, 건너뜀`);
+    return;
+  }
+
+  runningMinuteJob = true;
 
   try {
-    const nowKst = getKstNow();
-    const hour = nowKst.getUTCHours();
-    const minute = String(nowKst.getUTCMinutes()).padStart(2, '0');
+    console.log(`[스케줄러] 분단위 수집 실행 — ${formatKstDate(kst)} ${String(hour).padStart(2, '0')}시`);
 
-    if (hour < 8 || hour >= 19) {
-      console.log(`[스케줄러] KST ${hour}시 — 수집 시간 범위 밖, 건너뜀`);
-      return;
-    }
-
-    console.log(`[스케줄러] KST ${hour}:${minute} — 만료 공고 정리 후 증분 수집 시작`);
     await purgeExpiredNotices();
-    await runMinuteCollectors(nowKst);
+
+    if (isSourceEnabled('g2b_api')) {
+      await g2bCrawler.crawl({ minuteMode: true });
+    }
+
+    // seoul_contract는 페이지 부담 때문에 여기서 돌리지 않음
   } catch (err) {
-    console.error('[스케줄러] 에러:', err.message);
+    console.error('[스케줄러] 분단위 수집 실패', err.message);
   } finally {
-    isRunning = false;
+    runningMinuteJob = false;
   }
 }
 
-async function backfill(days) {
-  console.log(`[스케줄러] 최초 1회 백필 시작 — 최근 ${days}일`);
-
-  let collected = 0;
-  let updated = 0;
-  let errors = 0;
-
-  if (isSourceEnabled('g2b_api')) {
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(Date.now() + 9 * 3600000 - i * 86400000);
-      const y = d.getUTCFullYear();
-      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-      const day = String(d.getUTCDate()).padStart(2, '0');
-      const from = `${y}${m}${day}0000`;
-      const to = `${y}${m}${day}2359`;
-
-      console.log(`[백필][G2B] ${y}-${m}-${day} 수집`);
-
-      try {
-        const result = await g2bCrawler.crawl({ minuteMode: false, from, to });
-        collected += result.new || 0;
-        updated += result.updated || 0;
-        errors += result.errors || 0;
-      } catch (err) {
-        console.error(`[백필][G2B] ${y}-${m}-${day} 에러:`, err.message);
-        errors += 1;
-      }
-
-      await new Promise(r => setTimeout(r, 1000));
-    }
+async function runSeoulContractTwiceDaily() {
+  if (!isSourceEnabled('seoul_contract')) {
+    console.log('[스케줄러] seoul_contract 비활성화 상태');
+    return;
   }
 
-  if (isSourceEnabled('seoul_contract')) {
-    try {
-      console.log('[백필][SEOUL CONTRACT] 계약마당 전체 동기화 실행');
-      const result = await seoulContractCrawler.crawl({
-        minuteMode: false,
-        maxPages: parseInt(process.env.SEOUL_CONTRACT_PAGES_FULL || '8', 10)
-      });
-
-      collected += result.new || 0;
-      updated += result.updated || 0;
-      errors += result.errors || 0;
-    } catch (err) {
-      console.error('[백필][SEOUL CONTRACT] 에러:', err.message);
-      errors += 1;
-    }
+  if (runningSeoulContractJob) {
+    console.log('[스케줄러] 서울 계약마당 수집 이미 실행 중, 건너뜀');
+    return;
   }
 
-  console.log(`[스케줄러] 최초 백필 완료 — 신규 ${collected}, 갱신 ${updated}, 에러 ${errors}`);
-}
+  runningSeoulContractJob = true;
 
-async function loadTodayFull() {
-  const nowKst = getKstNow();
-  const y = nowKst.getUTCFullYear();
-  const m = String(nowKst.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(nowKst.getUTCDate()).padStart(2, '0');
-  const from = `${y}${m}${day}0000`;
-  const to = `${y}${m}${day}2359`;
+  try {
+    const today = formatKstDate();
+    console.log(`[스케줄러] 서울 계약마당 정기 수집 실행 — ${today}`);
 
-  if (isSourceEnabled('g2b_api')) {
-    console.log(`[스케줄러] 당일 전체 동기화 실행(나라장터) — ${y}-${m}-${day}`);
-    await g2bCrawler.crawl({ minuteMode: false, from, to });
-  }
+    await purgeExpiredNotices();
 
-  if (isSourceEnabled('seoul_contract')) {
-    console.log(`[스케줄러] 당일 전체 동기화 실행(서울 계약마당) — ${y}-${m}-${day}`);
     await seoulContractCrawler.crawl({
-      minuteMode: false,
-      maxPages: parseInt(process.env.SEOUL_CONTRACT_PAGES_FULL || '8', 10)
+      fetchDetail: true,
+      forceRefreshDetail: false,
+      maxPages: Number(process.env.SEOUL_CONTRACT_PAGES_FULL || 8),
+      recordCount: Number(process.env.SEOUL_CONTRACT_RECORD_COUNT || 50),
     });
+  } catch (err) {
+    console.error('[스케줄러] 서울 계약마당 정기 수집 실패', err.message);
+  } finally {
+    runningSeoulContractJob = false;
   }
 }
 
 async function initialLoad() {
-  const BACKFILL_DAYS = Math.max(parseInt(process.env.BACKFILL_DAYS || '30', 10), 1);
-  const noticeCount = await Notice.count();
+  try {
+    const count = await Notice.count();
+    console.log(`[스케줄러] 초기 점검 — notices ${count}건`);
 
-  if (noticeCount === 0) {
-    console.log('[스케줄러] notices 테이블이 비어 있어 최초 백필을 실행합니다.');
-    await backfill(BACKFILL_DAYS);
     await purgeExpiredNotices();
-    return;
-  }
 
-  console.log(`[스케줄러] 기존 데이터 ${noticeCount}건 확인 — 최초 백필은 건너뛰고 오늘 데이터만 동기화합니다.`);
-  await purgeExpiredNotices();
-  await loadTodayFull();
+    // 초기 기동 시에는 서울 계약마당 자동 실행하지 않음
+    // (페이지 부담 최소화 목적)
+    // 필요 시 수동으로만 실행
+  } catch (err) {
+    console.error('[스케줄러] 초기 로드 실패', err.message);
+  }
 }
 
 function start() {
-  cron.schedule('* * * * *', runCrawl, { timezone: 'Asia/Seoul' });
-  console.log('[스케줄러] 크론 등록 완료 — 매 분 실행 (KST 08:00~19:00)');
-  console.log('[스케줄러] 활성 수집 소스:', getEnabledCollectorSources().join(', '));
+  console.log(`[스케줄러] 활성 수집기: ${ENABLED_COLLECTOR_SOURCES.join(', ')}`);
 
-  cron.schedule('5 0 * * *', async () => {
-    try {
-      console.log('[스케줄러] 자정 지난 공고 정리 실행');
-      await purgeExpiredNotices();
-    } catch (err) {
-      console.error('[스케줄러] 만료 공고 정리 에러:', err.message);
-    }
-  }, { timezone: 'Asia/Seoul' });
+  // G2B 등 분단위 수집
+  cron.schedule('* * * * *', runMinuteCollectors, {
+    timezone: 'Asia/Seoul',
+  });
 
-  console.log('[스케줄러] 만료 공고 정리 크론 등록 완료 — 매일 00:05 KST');
+  // 만료 공고 정리: 매일 00:05 KST
+  cron.schedule('5 0 * * *', purgeExpiredNotices, {
+    timezone: 'Asia/Seoul',
+  });
 
-  setTimeout(async () => {
-    if (isRunning) return;
+  // 서울 계약마당: 하루 2회만
+  // 09:00 KST
+  cron.schedule('0 9 * * *', runSeoulContractTwiceDaily, {
+    timezone: 'Asia/Seoul',
+  });
 
-    isRunning = true;
-    try {
-      await initialLoad();
-    } catch (err) {
-      console.error('[스케줄러] 초기 적재 에러:', err.message);
-    } finally {
-      isRunning = false;
-    }
+  // 17:00 KST
+  cron.schedule('0 17 * * *', runSeoulContractTwiceDaily, {
+    timezone: 'Asia/Seoul',
+  });
+
+  console.log('[스케줄러] 분단위 수집 등록 완료');
+  console.log('[스케줄러] 만료 삭제 스케줄 등록 완료 (매일 00:05 KST)');
+  console.log('[스케줄러] 서울 계약마당 스케줄 등록 완료 (매일 09:00, 17:00 KST)');
+
+  setTimeout(() => {
+    initialLoad().catch((err) => {
+      console.error('[스케줄러] 초기 로드 예외', err.message);
+    });
   }, 5000);
 }
 
-module.exports = { start, getEnabledCollectorSources };
+module.exports = {
+  start,
+  getEnabledCollectorSources,
+  purgeExpiredNotices,
+};
