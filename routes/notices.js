@@ -37,6 +37,16 @@ function buildActiveNoticeCondition(now = new Date()) {
   };
 }
 
+function normalizeKeywords(raw) {
+  if (!raw) return [];
+  const list = Array.isArray(raw) ? raw : String(raw).split(',');
+  return list
+    .map(v => String(v || '').trim())
+    .filter(Boolean)
+    .filter((v, i, arr) => arr.indexOf(v) === i)
+    .slice(0, 10);
+}
+
 /* ════════════════════════════════════════════════
    GET /api/notices
 ════════════════════════════════════════════════ */
