@@ -37,15 +37,28 @@ const User = sequelize.define('User', {
   },
   // 관심 키워드 (JSON 배열로 저장)
   keywords: {
-    type: DataTypes.JSON,
-    defaultValue: []
+  type: DataTypes.JSON,
+  defaultValue: [],
+  get() {
+    return normalizeKeywordArray(this.getDataValue('keywords'));
   },
+  set(value) {
+    this.setDataValue('keywords', normalizeKeywordArray(value));
+  }
+},
   // 즐겨찾기 공고 ID 배열 (JSON)
   bookmarks: {
-    type: DataTypes.JSON,
-    defaultValue: []
+  type: DataTypes.JSON,
+  defaultValue: [],
+  get() {
+    return normalizeBookmarkArray(this.getDataValue('bookmarks'));
+  },
+  set(value) {
+    this.setDataValue('bookmarks', normalizeBookmarkArray(value));
   }
-}, {
+}
+}, 
+  {
   tableName: 'users',
   // password를 기본 JSON 응답에서 제외
   defaultScope: {
