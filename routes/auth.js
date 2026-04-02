@@ -13,6 +13,12 @@ function normalizeKeywords(raw) {
       .map(v => v.slice(0, 30))
   )].slice(0, 10);
 }
+function serializeUser(user) {
+  const data = user.toJSON ? user.toJSON() : { ...user };
+  data.keywords = normalizeKeywords(data.keywords);
+  data.bookmarks = Array.isArray(data.bookmarks) ? data.bookmarks : [];
+  return data;
+}
 
 /* ──────────── 회원가입 ──────────── */
 router.post('/register', async (req, res) => {
