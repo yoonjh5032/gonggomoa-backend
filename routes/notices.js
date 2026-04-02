@@ -59,11 +59,25 @@ router.get('/', async (req, res) => {
 } = req.query;
 
 const keywordList = normalizeKeywords(rawKeywords);
+// 관심 키워드 필터
+if (keywordList.length) {
+  const keywordOr = [];
+
+  keywordList.forEach((kw) => {
+    keywordOr.push({ title: { [Op.like]: `%${kw}%` } });
+    keywordOr.push({ issuing_org: { [Op.like]: `%${kw}%` } });
+    keywordOr.push({ demanding_org: { [Op.like]: `%${kw}%` } });
+  });
+
+  where[Op.and].push({ [Op.or]: keywordOr });
+}
 
     const where = {
       [Op.and]: [buildActiveNoticeCondition()]
     };
 
+    
+    
     // 검색어
     if (q && q.trim()) {
       where[Op.and].push({
