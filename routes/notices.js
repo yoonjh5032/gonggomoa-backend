@@ -53,10 +53,12 @@ function normalizeKeywords(raw) {
 router.get('/', async (req, res) => {
   try {
     const {
-      q, source, type, sortBy,
-      daysLeft, deadline,
-      limit: rawLimit, page: rawPage
-    } = req.query;
+  q, source, type, sortBy,
+  daysLeft, deadline, keywords: rawKeywords,
+  limit: rawLimit, page: rawPage
+} = req.query;
+
+const keywordList = normalizeKeywords(rawKeywords);
 
     const where = {
       [Op.and]: [buildActiveNoticeCondition()]
