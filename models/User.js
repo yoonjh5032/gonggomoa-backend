@@ -2,6 +2,48 @@
 const { DataTypes } = require('sequelize');
 const { sequelize }  = require('../config/db');
 const bcrypt          = require('bcryptjs');
+function normalizeKeywordArray(raw) {
+  let list = raw;
+
+  if (typeof list === 'string') {
+    try {
+      const parsed = JSON.parse(list);
+      list = Array.isArray(parsed) ? parsed : String(list).split(',');
+    } catch (e) {
+      list = String(list).split(',');
+    }
+  }
+
+  if (!Array.isArray(list)) list = [];
+
+  return [...new Set(
+    list
+      .map(v => String(v || '').trim())
+      .filter(Boolean)
+      .map(v => v.slice(0, 30))
+  )].slice(0, 10);
+}
+
+function normalizeBookmarkArray(raw) {
+  let list = raw;
+
+  if (typeof list === 'string') {
+    try {
+      const parsed = JSON.parse(list);
+      list = Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      list = [];
+    }
+  }
+
+  if (!Array.isArray(list)) list = [];
+
+  return [...new Set(
+    list
+      .map(v => Number(v))
+      .filter(v => Number.isInteger(v) && v > 0)
+  )];
+}
 
 const User = sequelize.define('User', {
   id: {
