@@ -52,23 +52,23 @@ function decodeHtml(str) {
 
 function stripTags(str) {
   return decodeHtml(String(str || ''))
-    .replace(/<br\\s*\\/?>/gi, ' ')
-    .replace(/<\\/p>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/p>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/\\s+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
 function cleanText(str) {
-  return stripTags(str).replace(/\\s+/g, ' ').trim();
+  return stripTags(str).replace(/\s+/g, ' ').trim();
 }
 
 function normalizeLabel(str) {
   return cleanText(str)
-    .replace(/[\\u00A0\\s]+/g, '')
+    .replace(/[\u00A0\s]+/g, '')
     .replace(/[：:]/g, '')
-    .replace(/[()[\\]{}]/g, '')
-    .replace(/\\//g, '')
+    .replace(/[()[\]{}]/g, '')
+    .replace(/\//g, '')
     .trim();
 }
 
@@ -76,7 +76,7 @@ function parseDateOnly(dateText) {
   const text = String(dateText || '').trim();
   if (!text) return null;
 
-  const m = text.match(/(\\d{4})[.\\/-](\\d{1,2})[.\\/-](\\d{1,2})/);
+  const m = text.match(/(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})/);
   if (!m) return null;
 
   const [, y, mo, d] = m;
@@ -90,12 +90,10 @@ function parseDateTime(text) {
   if (!raw) return null;
 
   const m = raw.match(
-    /(\\d{4})[.\\/-]\\s*(\\d{1,2})[.\\/-]\\s*(\\d{1,2})(?:[^\\d오전오후]{0,10}|\\s+)?(?:(오전|오후)\\s*)?(\\d{1,2})?(?::(\\d{2}))?(?::(\\d{2}))?/
+    /(\d{4})[.\-/]\s*(\d{1,2})[.\-/]\s*(\d{1,2})(?:[^\d오전오후]{0,10}|\s+)?(?:(오전|오후)\s*)?(\d{1,2})?(?::(\d{2}))?(?::(\d{2}))?/
   );
 
-  if (!m) {
-    return parseDateOnly(raw);
-  }
+  if (!m) return parseDateOnly(raw);
 
   const [, y, mo, d, meridiem, hh, mm, ss] = m;
 
@@ -129,7 +127,7 @@ function formatMoney(value) {
 }
 
 function extractDate(text, label) {
-  const re = new RegExp(`${label}\\s*\\|\\s*(\\d{4}[.\\/-]\\d{1,2}[.\\/-]\\d{1,2})`);
+  const re = new RegExp(`${label}\\s*\\|\\s*(\\d{4}[.\\-/]\\d{1,2}[.\\-/]\\d{1,2})`);
   const m = String(text || '').match(re);
   return m ? m[1] : '';
 }
@@ -152,7 +150,7 @@ function normalizeTaskClCd(taskCl) {
 }
 
 function buildDetailUrl(taskCl, bidNo, bidSeq) {
-  const seq = lpad(String(bidSeq || '000').replace(/\\D/g, ''), 3, '0');
+  const seq = lpad(String(bidSeq || '000').replace(/\D/g, ''), 3, '0');
   return `${DETAIL_HOST}/link/PNPE027_01/single/?bidPbancNo=${encodeURIComponent(
     bidNo
   )}&bidPbancOrd=${encodeURIComponent(seq)}&pbancType=pbanc`;
@@ -173,6 +171,14 @@ function buildLegacyDetailUrls(taskCl, bidNo, bidSeq) {
       `http://www.g2b.go.kr:8081/ep/invitation/publish/bidInfoDtl.do?${query}`,
     ])
   );
+}
+
+function absoluteUrl(url) {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  if (url.startsWith('//')) return `https:${url}`;
+  if (url.startsWith('/')) return `https://www.g2b.go.kr${url}`;
+  return `https://www.g2b.go.kr/${url.replace(/^\/+/, '')}`;
 }
 
 async function fetchHtml(url, referer = LIST_URL) {
@@ -201,7 +207,7 @@ function parseItemsFromHtml(html) {
   const seen = new Set();
 
   const rowPattern =
-    /<tr>\\s*<td[^>]*class=\"settxt\"[^>]*>([\\s\\S]*?)<\\/td>\\s*<\\/tr>\\s*<tr>\\s*<td[^>]*class=\"setst\"[^>]*>([\\s\\S]*?)<\\/td>\\s*<\\/tr>\\s*<tr>\\s*<td[^>]*class=\"daily[^\"]*\"[^>]*>([\\s\\S]*?)<\\/td>\\s*<td[^>]*class=\"daily[^\"]*\"[^>]*>([\\s\\S]*?)<\\/td>\\s*<td[^>]*class=\"daily[^\"]*\"[^>]*>([\\s\\S]*?)<\\/td>\\s*<\\/tr>/gi;
+    /<tr>\s*<td[^>]*class="settxt"[^>]*>([\s\S]*?)<\/td>\s*<\/tr>\s*<tr>\s*<td[^>]*class="setst"[^>]*>([\s\S]*?)<\/td>\s*<\/tr>\s*<tr>\s*<td[^>]*class="daily[^"]*"[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*class="daily[^"]*"[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*class="daily[^"]*"[^>]*>([\s\S]*?)<\/td>\s*<\/tr>/gi;
 
   let match;
   while ((match = rowPattern.exec(html)) !== null) {
@@ -212,17 +218,17 @@ function parseItemsFromHtml(html) {
     const daily3 = cleanText(match[5] || '');
 
     const onclickMatch = titleHtml.match(
-      /bidPopup_getBidInfoDtlUrl\\(\\s*'([^']+)'\\s*,\\s*'([^']+)'\\s*,\\s*'([^']+)'\\s*,\\s*'([^']+)'\\s*\\)/i
+      /bidPopup_getBidInfoDtlUrl\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*\)/i
     );
     if (!onclickMatch) continue;
 
     const [, taskCl, bidNo, bidSeq, popupType] = onclickMatch;
 
-    const titleMatch = titleHtml.match(/<b[^>]*>([\\s\\S]*?)<\\/b>/i);
+    const titleMatch = titleHtml.match(/<b[^>]*>([\s\S]*?)<\/b>/i);
     const title = cleanText(titleMatch ? titleMatch[1] : titleHtml);
     if (!title || !bidNo) continue;
 
-    const noticeTypeMatch = metaHtml.match(/sticker_[^\"]*\">([\\s\\S]*?)<\\/div>/i);
+    const noticeTypeMatch = metaHtml.match(/sticker_[^"]*">([\s\S]*?)<\/div>/i);
     const noticeType = cleanText(noticeTypeMatch ? noticeTypeMatch[1] : '');
 
     let metaText = cleanText(metaHtml);
@@ -232,7 +238,7 @@ function parseItemsFromHtml(html) {
 
     let orgGroup = '';
     let issuingOrg = '';
-    const orgMatch = metaText.match(/(.+?)\\s*\\|\\s*(.+)$/);
+    const orgMatch = metaText.match(/(.+?)\s*\|\s*(.+)$/);
     if (orgMatch) {
       orgGroup = cleanText(orgMatch[1]);
       issuingOrg = cleanText(orgMatch[2]);
@@ -312,6 +318,8 @@ function mapListItemToDoc(item) {
       bid_start_date: item.bidStartDate || '',
       opening_date: item.openingDate || '',
       detail_enriched: false,
+      attachments: [],
+      attachment_urls: [],
     },
     collected_at: new Date(),
   };
@@ -324,18 +332,16 @@ function extractFieldMap(html) {
     const key = normalizeLabel(label);
     const val = cleanText(value);
     if (!key || !val) return;
-    if (!map.has(key)) {
-      map.set(key, val);
-    }
+    if (!map.has(key)) map.set(key, val);
   };
 
-  const thTdPattern = /<th[^>]*>([\\s\\S]*?)<\\/th>\\s*<td[^>]*>([\\s\\S]*?)<\\/td>/gi;
+  const thTdPattern = /<th[^>]*>([\s\S]*?)<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/gi;
   let m;
   while ((m = thTdPattern.exec(html)) !== null) {
     put(m[1], m[2]);
   }
 
-  const dtDdPattern = /<dt[^>]*>([\\s\\S]*?)<\\/dt>\\s*<dd[^>]*>([\\s\\S]*?)<\\/dd>/gi;
+  const dtDdPattern = /<dt[^>]*>([\s\S]*?)<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/gi;
   while ((m = dtDdPattern.exec(html)) !== null) {
     put(m[1], m[2]);
   }
@@ -351,7 +357,96 @@ function getField(map, aliases) {
   return '';
 }
 
-function parseDetailHtml(html) {
+function extractAttachments(html, item) {
+  const attachments = [];
+  const seen = new Set();
+
+  const pushAttachment = (att) => {
+    if (!att || !att.url) return;
+    const normalized = {
+      name: cleanText(att.name || '') || `첨부파일_${att.fileSeq || attachments.length + 1}`,
+      url: absoluteUrl(att.url),
+      fileSeq: att.fileSeq != null ? String(att.fileSeq) : '',
+      fileType: att.fileType != null ? String(att.fileType) : '',
+      prcmBsneSeCd: att.prcmBsneSeCd != null ? String(att.prcmBsneSeCd) : '',
+    };
+    const key = `${normalized.url}::${normalized.name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    attachments.push(normalized);
+  };
+
+  // 1) href에 downloadFile.do가 직접 들어있는 경우
+  const hrefPattern = /<a[^>]+href="([^"]*downloadFile\.do[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = hrefPattern.exec(html)) !== null) {
+    const href = decodeHtml(m[1] || '');
+    const text = cleanText(m[2] || '');
+    let fileSeq = '';
+    let fileType = '';
+    let prcmBsneSeCd = '';
+
+    try {
+      const u = new URL(absoluteUrl(href));
+      fileSeq = u.searchParams.get('fileSeq') || '';
+      fileType = u.searchParams.get('fileType') || '';
+      prcmBsneSeCd = u.searchParams.get('prcmBsneSeCd') || '';
+    } catch (_) {}
+
+    pushAttachment({
+      name: text,
+      url: href,
+      fileSeq,
+      fileType,
+      prcmBsneSeCd,
+    });
+  }
+
+  // 2) onclick/js 문자열에 downloadFile.do가 들어있는 경우
+  const jsUrlPattern = /downloadFile\.do\?[^"' )]+/gi;
+  while ((m = jsUrlPattern.exec(html)) !== null) {
+    const path = decodeHtml(m[0]);
+    pushAttachment({
+      name: '',
+      url: absoluteUrl(`/pn/pnp/pnpe/UntyAtchFile/${path.split('downloadFile.do')[1] ? `downloadFile.do${path.split('downloadFile.do')[1]}` : ''}`),
+    });
+  }
+
+  // 3) fileSeq 기반 함수 호출만 있는 경우를 대비한 보강
+  // 예: onclick="...fileSeq='1'..." 또는 downloadFile('1')
+  const seqPattern = /fileSeq['"]?\s*[:=,]\s*['"]?(\d+)['"]?/gi;
+  while ((m = seqPattern.exec(html)) !== null) {
+    const fileSeq = m[1];
+    const url =
+      `${DETAIL_HOST}/pn/pnp/pnpe/UntyAtchFile/downloadFile.do?bidPbancNo=${encodeURIComponent(item.bidNo)}` +
+      `&bidPbancOrd=${encodeURIComponent(String(item.bidSeq || '000'))}` +
+      `&fileType=&fileSeq=${encodeURIComponent(fileSeq)}`;
+
+    pushAttachment({
+      name: `첨부파일_${fileSeq}`,
+      url,
+      fileSeq,
+    });
+  }
+
+  // 4) 앵커 텍스트 기반 휴리스틱
+  const attachmentAnchorPattern = /<a\b[^>]*>([\s\S]*?)<\/a>/gi;
+  while ((m = attachmentAnchorPattern.exec(html)) !== null) {
+    const text = cleanText(m[1] || '');
+    if (!text) continue;
+    if (!/(첨부|과업|제안요청|공고서|시방서|내역서|규격서|입찰안내|파일|붙임)/.test(text)) continue;
+
+    // 이미 수집된 다운로드 URL이 있으면 이름만 보정
+    const unnamed = attachments.find((a) => !a.name || /^첨부파일_\d+$/.test(a.name));
+    if (unnamed && text.length <= 200) {
+      unnamed.name = text;
+    }
+  }
+
+  return attachments;
+}
+
+function parseDetailHtml(html, item) {
   const map = extractFieldMap(html);
 
   const issuingOrg =
@@ -390,6 +485,8 @@ function parseDetailHtml(html) {
   const phoneRaw =
     getField(map, ['전화번호', '담당자전화번호', '공고기관담당자전화번호']) || '';
 
+  const attachments = extractAttachments(html, item);
+
   return {
     issuingOrg,
     demandingOrg,
@@ -403,6 +500,7 @@ function parseDetailHtml(html) {
     estimatedPrice: parseMoney(estimatedPriceRaw),
     manager: managerRaw,
     phone: phoneRaw,
+    attachments,
     fieldMap: Object.fromEntries(map.entries()),
   };
 }
@@ -421,13 +519,16 @@ function hasMeaningfulDetail(detail) {
         detail.budget ||
         detail.estimatedPrice ||
         detail.manager ||
-        detail.phone
+        detail.phone ||
+        (detail.attachments && detail.attachments.length)
       )
   );
 }
 
 function mergeDoc(baseDoc, detail, sourceUrl) {
-  const doc = {
+  const attachmentUrls = (detail.attachments || []).map((a) => a.url).filter(Boolean);
+
+  return {
     ...baseDoc,
     issuing_org: detail.issuingOrg || baseDoc.issuing_org,
     demanding_org: detail.demandingOrg || baseDoc.demanding_org,
@@ -451,12 +552,12 @@ function mergeDoc(baseDoc, detail, sourceUrl) {
       detail_manager: detail.manager || '',
       detail_phone: detail.phone || '',
       detail_field_map: detail.fieldMap || {},
+      attachments: detail.attachments || [],
+      attachment_urls: attachmentUrls,
       detail_enriched_at: new Date().toISOString(),
     },
     collected_at: new Date(),
   };
-
-  return doc;
 }
 
 async function fetchAndParseDetail(item) {
@@ -467,7 +568,7 @@ async function fetchAndParseDetail(item) {
       const html = await fetchHtml(url, LIST_URL);
       if (!html || html.length < 1000) continue;
 
-      const detail = parseDetailHtml(html);
+      const detail = parseDetailHtml(html, item);
       if (hasMeaningfulDetail(detail)) {
         return {
           ok: true,
@@ -475,8 +576,8 @@ async function fetchAndParseDetail(item) {
           detail,
         };
       }
-    } catch (err) {
-      // 다음 후보 URL로 계속 진행
+    } catch (_) {
+      // 다음 URL 시도
     }
   }
 
@@ -497,6 +598,7 @@ function shouldFetchDetail(existing, forceRefreshDetail) {
   if (!existing.issuing_org) return true;
   if (!existing.demanding_org) return true;
   if (!existing.budget && !existing.estimated_price) return true;
+  if (!Array.isArray(raw.attachments) || raw.attachments.length === 0) return true;
 
   return false;
 }
@@ -545,12 +647,14 @@ async function upsertItem(item, options = {}) {
         raw_data: {
           ...(baseDoc.raw_data || {}),
           detail_enriched: false,
+          attachments: [],
+          attachment_urls: [],
           detail_fetch_failed_at: new Date().toISOString(),
         },
       };
     }
 
-    const delay = Number(process.env.SEOUL_CONTRACT_DETAIL_DELAY_MS || 120);
+    const delay = Number(process.env.SEOUL_CONTRACT_DETAIL_DELAY_MS || 150);
     if (delay > 0) {
       await sleep(delay);
     }
@@ -570,17 +674,20 @@ async function upsertItem(item, options = {}) {
       raw_data: {
         ...(existing.raw_data || {}),
         ...(baseDoc.raw_data || {}),
+        attachments: Array.isArray(existing.raw_data?.attachments)
+          ? existing.raw_data.attachments
+          : [],
+        attachment_urls: Array.isArray(existing.raw_data?.attachment_urls)
+          ? existing.raw_data.attachment_urls
+          : [],
       },
     };
   }
 
-  const result = await saveNotice(finalDoc);
-  return result;
+  return saveNotice(finalDoc);
 }
 
 async function crawl(options = {}) {
-  const minuteMode = options.minuteMode !== false;
-
   const years =
     Array.isArray(options.years) && options.years.length
       ? options.years.map((v) => Number(v)).filter(Boolean)
@@ -588,8 +695,8 @@ async function crawl(options = {}) {
 
   const maxPages = Number(
     options.maxPages ||
-      process.env[minuteMode ? 'SEOUL_CONTRACT_PAGES_MINUTE' : 'SEOUL_CONTRACT_PAGES_FULL'] ||
-      (minuteMode ? 2 : 8)
+      process.env.SEOUL_CONTRACT_PAGES_FULL ||
+      8
   );
 
   const recordCount = Number(
@@ -616,6 +723,8 @@ async function crawl(options = {}) {
   let newCount = 0;
   let updatedCount = 0;
   let errorCount = 0;
+  let attachmentNoticeCount = 0;
+  let attachmentFileCount = 0;
 
   const globalSeen = new Set();
 
@@ -644,6 +753,23 @@ async function crawl(options = {}) {
               forceRefreshDetail,
             });
 
+            const saved = await Notice.findOne({
+              where: {
+                bid_ntce_no: item.bidNo,
+                bid_ntce_ord: String(item.bidSeq || '000'),
+                source_system: SOURCE_SYSTEM,
+              },
+            });
+
+            const files = Array.isArray(saved?.raw_data?.attachments)
+              ? saved.raw_data.attachments.length
+              : 0;
+
+            if (files > 0) {
+              attachmentNoticeCount += 1;
+              attachmentFileCount += files;
+            }
+
             if (result === 'new') newCount += 1;
             else updatedCount += 1;
           } catch (err) {
@@ -656,7 +782,6 @@ async function crawl(options = {}) {
         }
 
         if (items.length < recordCount) break;
-
         await sleep(250);
       } catch (err) {
         errorCount += 1;
@@ -667,7 +792,7 @@ async function crawl(options = {}) {
   }
 
   console.log(
-    `[SEOUL CONTRACT] 완료 — 파싱 ${parsedCount}, 신규 ${newCount}, 갱신 ${updatedCount}, 에러 ${errorCount}`
+    `[SEOUL CONTRACT] 완료 — 파싱 ${parsedCount}, 신규 ${newCount}, 갱신 ${updatedCount}, 에러 ${errorCount}, 첨부공고 ${attachmentNoticeCount}, 첨부파일 ${attachmentFileCount}`
   );
 
   return {
@@ -675,6 +800,8 @@ async function crawl(options = {}) {
     newCount,
     updatedCount,
     errorCount,
+    attachmentNoticeCount,
+    attachmentFileCount,
   };
 }
 
