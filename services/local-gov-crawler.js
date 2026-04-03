@@ -26,21 +26,6 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function cleanText(str) {
-  return decodeHtml(String(str || ''))
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/<\/p>/gi, ' ')
-    .replace(/<\/div>/gi, ' ')
-    .replace(/<\/li>/gi, ' ')
-    .replace(/<\/tr>/gi, ' ')
-    .replace(/<\/td>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 function decodeHtml(str) {
   return String(str || '')
     .replace(/&nbsp;/gi, ' ')
@@ -53,6 +38,24 @@ function decodeHtml(str) {
     .replace(/&#x2F;/gi, '/')
     .replace(/&#40;/gi, '(')
     .replace(/&#41;/gi, ')');
+}
+
+function cleanText(str) {
+  return decodeHtml(String(str || ''))
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/<\/p>/gi, ' ')
+    .replace(/<\/div>/gi, ' ')
+    .replace(/<\/li>/gi, ' ')
+    .replace(/<\/tr>/gi, ' ')
+    .replace(/<\/td>/gi, ' ')
+    .replace(/<\/th>/gi, ' ')
+    .replace(/<\/dt>/gi, ' ')
+    .replace(/<\/dd>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function sha1(value) {
@@ -69,6 +72,10 @@ function absoluteUrl(url, baseUrl) {
   } catch (_) {
     return '';
   }
+}
+
+function escapeRegExp(str) {
+  return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function getSourceList() {
@@ -95,29 +102,54 @@ async function fetchHtml(url, referer = '') {
   return res.data;
 }
 
-function buildPagedUrl(listUrl, pageParam, pageNo) {
-  if (!listUrl) return '';
-  if (!pageParam || pageNo <= 1) return listUrl;
+function buildListPageUrls(source, maxPages = 3) {
+  const urls = [];
+  const listUrl = source.list_url;
+  const pageParam = source.detail_hint?.page_param || null;
 
-  try {
-    const url = new URL(listUrl);
-    url.searchParams.set(pageParam, String(pageNo));
-    return url.toString();
-  } catch (_) {
-    return listUrl;
+  if (!listUrl) return urls;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    try {
+      const url = new URL(listUrl);
+
+      if (pageParam && page > 1) {
+        url.searchParams.set(pageParam, String(page));
+      }
+
+      // 용산구는 전체 대신 공고(optn1=01) 우선
+      if (source.parser_type === 'yongsan_health_bbs_list') {
+        if (!url.searchParams.get('optn1')) {
+          url.searchParams.set('optn1', '01');
+        }
+      }
+
+      urls.push(url.toString());
+    } catch (_) {
+      if (page === 1) {
+        urls.push(listUrl);
+      }
+    }
   }
+
+  return urls;
 }
 
 function extractTitle(html) {
-  const h1 =
-    html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i) ||
-    html.match(/<h2[^>]*>([\s\S]*?)<\/h2>/i) ||
-    html.match(/<strong[^>]*class="[^"]*title[^"]*"[^>]*>([\s\S]*?)<\/strong>/i) ||
-    html.match(/<div[^>]*class="[^"]*title[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
+  const patterns = [
+    /<h1[^>]*>([\s\S]*?)<\/h1>/i,
+    /<h2[^>]*>([\s\S]*?)<\/h2>/i,
+    /<th[^>]*scope=["']row["'][^>]*>\s*제목\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i,
+    /<div[^>]*class="[^"]*title[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+    /<strong[^>]*class="[^"]*title[^"]*"[^>]*>([\s\S]*?)<\/strong>/i
+  ];
 
-  if (h1) {
-    const v = cleanText(h1[1]);
-    if (v) return v;
+  for (const re of patterns) {
+    const m = html.match(re);
+    if (m) {
+      const v = cleanText(m[1]);
+      if (v) return v;
+    }
   }
 
   const og = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
@@ -138,47 +170,232 @@ function extractBodyText(html) {
   return cleanText(html);
 }
 
-function extractAnchors(html, baseUrl) {
+function extractAnchorsWithAttrs(html, baseUrl) {
   const items = [];
-  const seen = new Set();
-  const anchorRegex = /<a\b[^>]*href=["']([^"'#]+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const anchorRegex = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
 
   let m;
   while ((m = anchorRegex.exec(html)) !== null) {
-    const href = absoluteUrl(m[1], baseUrl);
-    const text = cleanText(m[2]);
+    const attrsRaw = m[1] || '';
+    const innerHtml = m[2] || '';
+    const text = cleanText(innerHtml);
 
-    if (!href) continue;
-    if (seen.has(href)) continue;
-    seen.add(href);
+    const hrefMatch = attrsRaw.match(/\bhref=["']([^"']+)["']/i);
+    const onclickMatch = attrsRaw.match(/\bonclick=["']([\s\S]*?)["']/i);
+    const idMatch = attrsRaw.match(/\bid=["']([^"']+)["']/i);
+    const classMatch = attrsRaw.match(/\bclass=["']([^"']+)["']/i);
 
-    items.push({ href, text });
+    const dataAttrs = {};
+    const dataRegex = /\bdata-([a-zA-Z0-9_-]+)=["']([^"']+)["']/g;
+    let dm;
+    while ((dm = dataRegex.exec(attrsRaw)) !== null) {
+      dataAttrs[dm[1]] = decodeHtml(dm[2]);
+    }
+
+    const href = hrefMatch ? absoluteUrl(hrefMatch[1], baseUrl) : '';
+
+    items.push({
+      href,
+      text,
+      onclick: onclickMatch ? decodeHtml(onclickMatch[1]) : '',
+      id: idMatch ? decodeHtml(idMatch[1]) : '',
+      className: classMatch ? decodeHtml(classMatch[1]) : '',
+      dataAttrs,
+      attrsRaw,
+    });
   }
 
   return items;
 }
 
-function extractListLinksGeneric(html, source) {
+function extractHrefFromOnclick(onclick, baseUrl) {
+  const raw = decodeHtml(onclick || '');
+  if (!raw) return '';
+
+  const directUrlMatch =
+    raw.match(/location\.href\s*=\s*['"]([^'"]+)['"]/i) ||
+    raw.match(/window\.open\(\s*['"]([^'"]+)['"]/i) ||
+    raw.match(/openPopup\(\s*['"]([^'"]+)['"]/i);
+
+  if (directUrlMatch) {
+    return absoluteUrl(directUrlMatch[1], baseUrl);
+  }
+
+  const viewMatch = raw.match(
+    /((?:https?:)?\/\/[^'"]+View\.do\?[^'"]+|\/[^'"]*View\.do\?[^'"]+)/i
+  );
+  if (viewMatch) {
+    return absoluteUrl(viewMatch[1], baseUrl);
+  }
+
+  return '';
+}
+
+function dedupeByHref(items = []) {
+  const seen = new Set();
+  const out = [];
+
+  for (const item of items) {
+    const href = item?.href || '';
+    if (!href || seen.has(href)) continue;
+    seen.add(href);
+    out.push(item);
+  }
+
+  return out;
+}
+
+function filterItemsByTitleRules(items, source) {
+  const defaults = getDefaultOptions();
+  const includeRegex = source.include_regex || defaults.include_regex;
+  const excludeRegex = source.exclude_regex || defaults.exclude_regex;
+
+  return items.filter((item) => {
+    const text = cleanText(item.text || '');
+
+    if (!text) return false;
+    if (excludeRegex && excludeRegex.test(text)) return false;
+    if (includeRegex && includeRegex.test(text)) return true;
+
+    return false;
+  });
+}
+
+function extractLinksForEgovList(html, source) {
   const baseUrl = source.list_url || source.detail_hint?.entry_url || '';
-  const links = extractAnchors(html, baseUrl);
+  const anchors = extractAnchorsWithAttrs(html, baseUrl);
   const itemPattern = source.detail_hint?.item_link_pattern || null;
 
-  return links.filter((item) => {
-    if (!item.href) return false;
-    if (itemPattern && !itemPattern.test(item.href)) return false;
-    return true;
-  });
+  const items = anchors
+    .map((a) => ({
+      href: a.href || extractHrefFromOnclick(a.onclick, baseUrl),
+      text: a.text,
+    }))
+    .filter((a) => a.href && (!itemPattern || itemPattern.test(a.href)));
+
+  return dedupeByHref(items);
+}
+
+function extractLinksForYongsanHealth(html, source) {
+  const baseUrl = source.list_url || source.detail_hint?.entry_url || '';
+  const anchors = extractAnchorsWithAttrs(html, baseUrl);
+  const itemPattern =
+    source.detail_hint?.item_link_pattern || /\/portal\/bbs\/B0000095\/view\.do\?/i;
+
+  const items = anchors
+    .map((a) => ({
+      href: a.href || extractHrefFromOnclick(a.onclick, baseUrl),
+      text: a.text,
+    }))
+    .filter((a) => a.href && itemPattern.test(a.href));
+
+  return dedupeByHref(filterItemsByTitleRules(items, source));
+}
+
+function extractLinksForSeocho(html, source) {
+  const baseUrl = source.list_url || source.detail_hint?.entry_url || '';
+  const anchors = extractAnchorsWithAttrs(html, baseUrl);
+  const itemPattern =
+    source.detail_hint?.item_link_pattern || /\/site\/seocho\/ex\/bbs\/View\.do\?/i;
+
+  const listItems = anchors
+    .map((a) => ({
+      href: a.href || extractHrefFromOnclick(a.onclick, baseUrl),
+      text: a.text,
+    }))
+    .filter((a) => a.href && itemPattern.test(a.href));
+
+  const filtered = filterItemsByTitleRules(listItems, source);
+
+  const seedItems = getSeedDetailLinks(source).map((href) => ({
+    href,
+    text: '',
+  }));
+
+  return dedupeByHref([...filtered, ...seedItems]);
+}
+
+function extractLinksForGwanak(html, source) {
+  const baseUrl = source.list_url || source.detail_hint?.entry_url || '';
+  const anchors = extractAnchorsWithAttrs(html, baseUrl);
+
+  const items = [];
+
+  for (const a of anchors) {
+    const text = cleanText(a.text || '');
+    let href = a.href || extractHrefFromOnclick(a.onclick, baseUrl);
+
+    if (href && /#view$/i.test(href)) {
+      href = '';
+    }
+
+    if (!href) {
+      const blob = `${a.onclick || ''} ${a.attrsRaw || ''}`;
+
+      const bcIdx =
+        (blob.match(/\bbcIdx['"]?\s*[:=,]\s*['"]?(\d+)['"]?/i) || [])[1];
+      const nttId =
+        (blob.match(/\bnttId['"]?\s*[:=,]\s*['"]?(\d+)['"]?/i) || [])[1];
+      const bbsIdx =
+        (blob.match(/\bbbsIdx['"]?\s*[:=,]\s*['"]?(\d+)['"]?/i) || [])[1];
+      const seq =
+        (blob.match(/\bseq['"]?\s*[:=,]\s*['"]?(\d+)['"]?/i) || [])[1];
+      const id =
+        (blob.match(/\bid['"]?\s*[:=,]\s*['"]?(\d+)['"]?/i) || [])[1];
+
+      const candidates = [];
+
+      if (bcIdx) {
+        candidates.push(`/site/gwanak/ex/bbsNew/View.do?bcIdx=${bcIdx}`);
+      }
+      if (nttId) {
+        candidates.push(`/site/gwanak/ex/bbsNew/View.do?nttId=${nttId}`);
+      }
+      if (bbsIdx && nttId) {
+        candidates.push(`/site/gwanak/ex/bbs/View.do?bbsIdx=${bbsIdx}&nttId=${nttId}`);
+      }
+      if (seq) {
+        candidates.push(`/site/gwanak/ex/bbsNew/View.do?seq=${seq}`);
+      }
+      if (id) {
+        candidates.push(`/site/gwanak/ex/bbsNew/View.do?id=${id}`);
+      }
+
+      href =
+        candidates
+          .map((u) => absoluteUrl(u, baseUrl))
+          .find(Boolean) || '';
+    }
+
+    if (!href) continue;
+    items.push({ href, text });
+  }
+
+  return dedupeByHref(filterItemsByTitleRules(items, source));
 }
 
 function extractCandidateLinksFromList(html, source) {
   switch (source.parser_type) {
     case 'gwanak_bbsnew_list':
+      return extractLinksForGwanak(html, source);
+
     case 'egov_gosi_list':
+      return extractLinksForEgovList(html, source);
+
     case 'seocho_ex_bbs_list':
+      return extractLinksForSeocho(html, source);
+
     case 'yongsan_health_bbs_list':
-      return extractListLinksGeneric(html, source);
+      return extractLinksForYongsanHealth(html, source);
+
+    case 'seed_detail_and_attachment':
+    case 'seed_detail_notice':
+    case 'jungnang_portal_bbs_seed':
+    case 'legacy_detail_seed':
+      return [];
+
     default:
-      return extractListLinksGeneric(html, source);
+      return extractLinksForEgovList(html, source);
   }
 }
 
@@ -192,7 +409,9 @@ function getSeedDetailLinks(source) {
 
 function getSeedAttachmentLinks(source) {
   const detailHint = source.detail_hint || {};
-  const urls = Array.isArray(detailHint.seed_attachment_urls) ? detailHint.seed_attachment_urls : [];
+  const urls = Array.isArray(detailHint.seed_attachment_urls)
+    ? detailHint.seed_attachment_urls
+    : [];
   return urls
     .map((v) => absoluteUrl(v, detailHint.entry_url || source.list_url || ''))
     .filter(Boolean);
@@ -220,54 +439,40 @@ async function collectCandidateLinks(source, options = {}) {
     collected.push(url);
   };
 
-  // seed-only 파서는 상세 시드만 사용
   if (shouldUseSeedOnlyParser(source)) {
     getSeedDetailLinks(source).forEach(push);
     return collected;
   }
 
-  // list_url이 있으면 목록 탐색
   if (source.list_url) {
-    const pageParam = source.detail_hint?.page_param || null;
+    const pageUrls = buildListPageUrls(source, maxPages);
 
-    for (let page = 1; page <= maxPages; page += 1) {
-      const pagedUrl = buildPagedUrl(source.list_url, pageParam, page);
-
+    for (const pageUrl of pageUrls) {
       try {
-        const html = await fetchHtml(pagedUrl, source.detail_hint?.entry_url || source.list_url);
+        const html = await fetchHtml(pageUrl, source.detail_hint?.entry_url || source.list_url);
         const links = extractCandidateLinksFromList(html, source);
 
-        if (!links.length) {
-          if (page === 1) {
-            // 1페이지에 링크가 하나도 없으면 seed fallback
-            getSeedDetailLinks(source).forEach(push);
-          }
-          break;
+        if (links.length) {
+          links.forEach((item) => push(typeof item === 'string' ? item : item.href));
         }
-
-        links.forEach((item) => push(item.href));
 
         if (requestDelayMs > 0) {
           await sleep(requestDelayMs);
         }
       } catch (err) {
-        console.error(`[LOCAL GOV] 목록 요청 실패 — ${source.key} page=${page}`, err.message);
-        if (page === 1) {
-          getSeedDetailLinks(source).forEach(push);
-        }
-        break;
+        console.error(`[LOCAL GOV] 목록 요청 실패 — ${source.key} ${pageUrl}`, err.message);
       }
     }
-  } else {
-    getSeedDetailLinks(source).forEach(push);
   }
+
+  getSeedDetailLinks(source).forEach(push);
 
   return collected;
 }
 
 function extractFieldValue(html, labels = []) {
   for (const label of labels) {
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escaped = escapeRegExp(label);
 
     const thTd = new RegExp(
       `<th[^>]*>\\s*${escaped}\\s*<\\/th>\\s*<td[^>]*>([\\s\\S]*?)<\\/td>`,
@@ -373,20 +578,20 @@ function extractClosingAt(html) {
 }
 
 function extractAttachments(html, baseUrl) {
-  const anchors = extractAnchors(html, baseUrl);
+  const anchors = extractAnchorsWithAttrs(html, baseUrl);
 
   return anchors
-    .filter((a) => {
-      if (!a.href) return false;
-      if (/\.(pdf|hwp|hwpx|doc|docx|xls|xlsx|zip)$/i.test(a.href)) return true;
-      if (/download|fileDown|getFile|downloadBbsFile|FileDown/i.test(a.href)) return true;
-      if (/(첨부|붙임|공고문|제안요청서|과업지시서|제안서)/i.test(a.text)) return true;
-      return false;
-    })
     .map((a) => ({
       name: a.text || '첨부파일',
-      url: a.href,
-    }));
+      url: a.href || extractHrefFromOnclick(a.onclick, baseUrl),
+    }))
+    .filter((a) => {
+      if (!a.url) return false;
+      if (/\.(pdf|hwp|hwpx|doc|docx|xls|xlsx|zip)$/i.test(a.url)) return true;
+      if (/download|fileDown|getFile|downloadBbsFile|FileDown|convertToHtml/i.test(a.url)) return true;
+      if (/(첨부|붙임|공고문|제안요청서|과업지시서|제안서|신청서|평가자료)/i.test(a.name)) return true;
+      return false;
+    });
 }
 
 function inferNoticeType(title, bodyText = '') {
@@ -417,6 +622,7 @@ function extractStableId(detailUrl, source) {
     /[?&]idx=(\d+)/i,
     /[?&]sdmBoardSeq=(\d+)/i,
     /[?&]id=(\d+)/i,
+    /[?&]seq=(\d+)/i,
   ];
 
   for (const re of qsPatterns) {
@@ -466,12 +672,8 @@ function parseDetailGeneric(html, detailUrl, source) {
     extractFieldValue(html, ['담당부서', '부서', '공고기관', '발주부서']) ||
     `${source.district_name}청`;
 
-  const manager =
-    extractFieldValue(html, ['담당자', '작성자']) || '';
-
-  const phone =
-    extractFieldValue(html, ['전화번호', '연락처']) || '';
-
+  const manager = extractFieldValue(html, ['담당자', '작성자']) || '';
+  const phone = extractFieldValue(html, ['전화번호', '연락처']) || '';
   const noticeType = inferNoticeType(title, bodyText);
 
   return {
@@ -587,7 +789,10 @@ async function crawlSource(source, options = {}) {
     seen.add(detailUrl);
 
     try {
-      const html = await fetchHtml(detailUrl, source.list_url || source.detail_hint?.entry_url || '');
+      const html = await fetchHtml(
+        detailUrl,
+        source.list_url || source.detail_hint?.entry_url || ''
+      );
       const parsedDetail = parseDetailByType(html, detailUrl, source);
       parsed += 1;
 
@@ -634,16 +839,19 @@ async function crawlSource(source, options = {}) {
 async function crawl(options = {}) {
   const sources = getSourceList().filter((s) => s.enabled !== false);
 
-  const onlyKeys = Array.isArray(options.keys) && options.keys.length
-    ? new Set(options.keys.map((v) => String(v).trim()))
-    : null;
+  const onlyKeys =
+    Array.isArray(options.keys) && options.keys.length
+      ? new Set(options.keys.map((v) => String(v).trim()))
+      : null;
 
   const targetSources = onlyKeys
     ? sources.filter((s) => onlyKeys.has(s.key))
     : sources;
 
   console.log(
-    `[LOCAL GOV] 수집 시작 — 대상 ${targetSources.length}개 구청 (${targetSources.map((s) => s.key).join(', ')})`
+    `[LOCAL GOV] 수집 시작 — 대상 ${targetSources.length}개 구청 (${targetSources
+      .map((s) => s.key)
+      .join(', ')})`
   );
 
   const results = [];
