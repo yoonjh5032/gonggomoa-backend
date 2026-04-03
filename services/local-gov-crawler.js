@@ -709,29 +709,37 @@ function isActiveNotice(closingAt) {
   if (!closingAt) return true;
   return closingAt.getTime() >= Date.now();
 }
+const RELAXED_STARTUP_INCLUDE_REGEX =
+  /(공고|모집|용역|입찰|위탁|제안서|사업자|수탁|협상|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행)/i;
 
-function shouldKeepNotice(source, title, bodyText) {
+function shouldKeepNotice(source, title, bodyText, options = {}) {
   const defaults = getDefaultOptions();
-  const includeRegex = source.include_regex || defaults.include_regex;
+
+  const isStartupBackfill = Number(options.lookbackDays) > 0;
+
+  const includeRegex = isStartupBackfill
+    ? RELAXED_STARTUP_INCLUDE_REGEX
+    : (source.include_regex || defaults.include_regex);
+
   const excludeRegex = source.exclude_regex || defaults.exclude_regex;
 
   const titleText = cleanText(title);
   const body = cleanText(bodyText);
 
+  // 제외 키워드는 계속 우선 적용
   if (excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body))) {
     return false;
   }
 
-  if (includeRegex && includeRegex.test(titleText)) {
-    return true;
-  }
-
-  if (defaults.body_fallback_filter && includeRegex && includeRegex.test(body)) {
+  // startup 보정수집에서는 제목/본문 중 하나만 맞아도 통과
+  if (includeRegex && (includeRegex.test(titleText) || includeRegex.test(body))) {
     return true;
   }
 
   return false;
 }
+
+
 
 function parseDetailGeneric(html, detailUrl, source) {
   const title = extractTitle(html);
@@ -889,10 +897,11 @@ async function crawlSource(source, options = {}) {
         continue;
       }
 
-      if (!shouldKeepNotice(source, parsedDetail.title, parsedDetail.bodyText)) {
-        droppedByKeyword += 1;
-        continue;
-      }
+      if (!shouldKeepNotice(source, parsedDetail.title, parsedDetail.bodyText, options)) {
+  droppedByKeyword += 1;
+  continue;
+}
+
 
       if (defaults.active_post_only && !isActiveNotice(parsedDetail.closingAt)) {
         droppedByInactive += 1;
