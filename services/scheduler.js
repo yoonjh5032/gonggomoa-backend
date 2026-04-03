@@ -33,8 +33,13 @@ const G2B_OPEN_RESYNC_BUFFER_HOURS = Number(
 // LOCAL GOV 설정
 const LOCAL_GOV_CRON = process.env.LOCAL_GOV_CRON || '10,40 8-18 * * *';
 const LOCAL_GOV_MAX_PAGES = Number(process.env.LOCAL_GOV_MAX_PAGES || 2);
+
+// startup 보정수집은 일반 수집보다 넓게 본다
 const LOCAL_GOV_STARTUP_MAX_PAGES = Number(
-  process.env.LOCAL_GOV_STARTUP_MAX_PAGES || 1
+  process.env.LOCAL_GOV_STARTUP_MAX_PAGES || 20
+);
+const LOCAL_GOV_STARTUP_LOOKBACK_DAYS = Number(
+  process.env.LOCAL_GOV_STARTUP_LOOKBACK_DAYS || 90
 );
 const LOCAL_GOV_STARTUP_ENABLED =
   process.env.LOCAL_GOV_STARTUP_ENABLED !== 'false';
@@ -174,7 +179,6 @@ async function runMinuteCollectors() {
   const kst = getKstNow();
   const hour = kst.getUTCHours();
 
-  // 기존 정책 유지: 분단위 수집은 08~19시만
   if (hour < 8 || hour >= 19) {
     console.log(`[스케줄러] KST ${hour}시 — 수집 시간 범위 밖, 건너뜀`);
     return;
@@ -237,8 +241,8 @@ async function runG2bStartupBackfill() {
   }
 
   try {
-    const fromDate = getKstStartOfDay(1); // 어제 00:00 KST
-    const toDate = new Date(); // 현재 시각
+    const fromDate = getKstStartOfDay(1);
+    const toDate = new Date();
 
     await runG2bRangeSync('G2B 기동 보정 수집(오늘+어제)', fromDate, toDate);
   } catch (err) {
@@ -360,16 +364,20 @@ async function runLocalGovRegularCollection(reason = 'scheduled', options = {}) 
         ? Number(options.maxPages)
         : LOCAL_GOV_MAX_PAGES;
 
+    const lookbackDays =
+      Number(options.lookbackDays) > 0 ? Number(options.lookbackDays) : 0;
+
     console.log(
       `[스케줄러] local_gov 정기 수집 실행 (${reason}) — maxPages=${maxPages}${
-        targetKeys?.length ? ` keys=${targetKeys.join(',')}` : ''
-      }`
+        lookbackDays > 0 ? ` lookbackDays=${lookbackDays}` : ''
+      }${targetKeys?.length ? ` keys=${targetKeys.join(',')}` : ''}`
     );
 
     await purgeExpiredNotices();
 
     const result = await localGovCrawler.crawl({
       maxPages,
+      ...(lookbackDays > 0 ? { lookbackDays } : {}),
       ...(targetKeys?.length ? { keys: targetKeys } : {}),
     });
 
@@ -394,11 +402,11 @@ async function initialLoad() {
     if (LOCAL_GOV_STARTUP_ENABLED) {
       await runLocalGovRegularCollection('startup', {
         maxPages: LOCAL_GOV_STARTUP_MAX_PAGES,
+        lookbackDays: LOCAL_GOV_STARTUP_LOOKBACK_DAYS,
       });
     }
 
     // 초기 기동 시에는 서울 계약마당 자동 실행하지 않음
-    // (페이지 부담 최소화 목적)
   } catch (err) {
     console.error('[스케줄러] 초기 로드 실패', err.message);
   }
@@ -407,32 +415,26 @@ async function initialLoad() {
 function start() {
   console.log(`[스케줄러] 활성 수집기: ${ENABLED_COLLECTOR_SOURCES.join(', ')}`);
 
-  // G2B 분단위 실시간 수집
   cron.schedule('* * * * *', runMinuteCollectors, {
     timezone: 'Asia/Seoul',
   });
 
-  // G2B 보정 수집: 30분마다 최근 72시간
   cron.schedule(G2B_BACKFILL_CRON, () => runG2bBackfill(), {
     timezone: 'Asia/Seoul',
   });
 
-  // G2B 미마감 공고 재동기화: 하루 4회
   cron.schedule(G2B_OPEN_RESYNC_CRON, runG2bOpenNoticeResync, {
     timezone: 'Asia/Seoul',
   });
 
-  // local_gov 정기수집
   cron.schedule(LOCAL_GOV_CRON, () => runLocalGovRegularCollection('scheduled'), {
     timezone: 'Asia/Seoul',
   });
 
-  // 만료 공고 정리: 매일 00:05 KST
   cron.schedule('5 0 * * *', purgeExpiredNotices, {
     timezone: 'Asia/Seoul',
   });
 
-  // 서울 계약마당: 하루 2회
   cron.schedule('0 9 * * *', runSeoulContractTwiceDaily, {
     timezone: 'Asia/Seoul',
   });
@@ -447,6 +449,9 @@ function start() {
     `[스케줄러] G2B 미마감 재동기화 등록 완료 (${G2B_OPEN_RESYNC_CRON})`
   );
   console.log(`[스케줄러] local_gov 정기 수집 등록 완료 (${LOCAL_GOV_CRON})`);
+  console.log(
+    `[스케줄러] local_gov startup 보정수집 설정 — lookbackDays=${LOCAL_GOV_STARTUP_LOOKBACK_DAYS}, maxPages=${LOCAL_GOV_STARTUP_MAX_PAGES}`
+  );
   console.log('[스케줄러] 만료 삭제 스케줄 등록 완료 (매일 00:05 KST)');
   console.log('[스케줄러] 서울 계약마당 스케줄 등록 완료 (매일 09:00, 17:00 KST)');
 
