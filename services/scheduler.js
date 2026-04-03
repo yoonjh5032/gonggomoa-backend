@@ -1,11 +1,13 @@
 const cron = require('node-cron');
 const { Op } = require('sequelize');
+
 const g2bCrawler = require('./g2b-crawler');
 const seoulContractCrawler = require('./seoul-contract-crawler');
+const localGovCrawler = require('./local-gov-crawler');
 const Notice = require('../models/Notice');
 
 const ENABLED_COLLECTOR_SOURCES = (
-  process.env.ENABLED_COLLECTOR_SOURCES || 'g2b_api,seoul_contract'
+  process.env.ENABLED_COLLECTOR_SOURCES || 'g2b_api,seoul_contract,local_gov'
 )
   .split(',')
   .map((v) => v.trim())
@@ -13,17 +15,43 @@ const ENABLED_COLLECTOR_SOURCES = (
 
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 
+// G2B 설정
 const G2B_BACKFILL_HOURS = Number(process.env.G2B_BACKFILL_HOURS || 72);
 const G2B_BACKFILL_CRON = process.env.G2B_BACKFILL_CRON || '0,30 * * * *';
-const G2B_OPEN_RESYNC_CRON = process.env.G2B_OPEN_RESYNC_CRON || '15 0,6,12,18 * * *';
-const G2B_OPEN_RESYNC_FALLBACK_DAYS = Number(process.env.G2B_OPEN_RESYNC_FALLBACK_DAYS || 30);
-const G2B_OPEN_RESYNC_MAX_LOOKBACK_DAYS = Number(process.env.G2B_OPEN_RESYNC_MAX_LOOKBACK_DAYS || 90);
-const G2B_OPEN_RESYNC_BUFFER_HOURS = Number(process.env.G2B_OPEN_RESYNC_BUFFER_HOURS || 6);
+const G2B_OPEN_RESYNC_CRON =
+  process.env.G2B_OPEN_RESYNC_CRON || '15 0,6,12,18 * * *';
+const G2B_OPEN_RESYNC_FALLBACK_DAYS = Number(
+  process.env.G2B_OPEN_RESYNC_FALLBACK_DAYS || 30
+);
+const G2B_OPEN_RESYNC_MAX_LOOKBACK_DAYS = Number(
+  process.env.G2B_OPEN_RESYNC_MAX_LOOKBACK_DAYS || 90
+);
+const G2B_OPEN_RESYNC_BUFFER_HOURS = Number(
+  process.env.G2B_OPEN_RESYNC_BUFFER_HOURS || 6
+);
+
+// LOCAL GOV 설정
+const LOCAL_GOV_CRON = process.env.LOCAL_GOV_CRON || '10,40 8-18 * * *';
+const LOCAL_GOV_MAX_PAGES = Number(process.env.LOCAL_GOV_MAX_PAGES || 2);
+const LOCAL_GOV_STARTUP_MAX_PAGES = Number(
+  process.env.LOCAL_GOV_STARTUP_MAX_PAGES || 1
+);
+const LOCAL_GOV_STARTUP_ENABLED =
+  process.env.LOCAL_GOV_STARTUP_ENABLED !== 'false';
 
 let runningMinuteJob = false;
 let runningSeoulContractJob = false;
 let runningPurgeJob = false;
+let runningLocalGovJob = false;
 let runningG2bSyncJob = '';
+
+function parseCsvList(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
 
 function isSourceEnabled(source) {
   return ENABLED_COLLECTOR_SOURCES.includes(source);
@@ -61,7 +89,10 @@ function getKstStartOfDay(daysAgo = 0) {
       nowKst.getUTCFullYear(),
       nowKst.getUTCMonth(),
       nowKst.getUTCDate() - daysAgo,
-      0, 0, 0, 0
+      0,
+      0,
+      0,
+      0
     ) - KST_OFFSET_MS
   );
 }
@@ -75,7 +106,9 @@ function buildKstRange(fromDate, toDate = new Date()) {
 
 function tryStartG2bSync(jobName) {
   if (runningG2bSyncJob) {
-    console.log(`[스케줄러] ${jobName} 건너뜀 — 다른 G2B 작업 실행 중 (${runningG2bSyncJob})`);
+    console.log(
+      `[스케줄러] ${jobName} 건너뜀 — 다른 G2B 작업 실행 중 (${runningG2bSyncJob})`
+    );
     return false;
   }
   runningG2bSyncJob = jobName;
@@ -155,7 +188,10 @@ async function runMinuteCollectors() {
 
   try {
     console.log(
-      `[스케줄러] 분단위 수집 실행 — ${formatKstDate(kst)} ${String(hour).padStart(2, '0')}시`
+      `[스케줄러] 분단위 수집 실행 — ${formatKstDate(kst)} ${String(hour).padStart(
+        2,
+        '0'
+      )}시`
     );
 
     await purgeExpiredNotices();
@@ -230,10 +266,7 @@ async function runG2bOpenNoticeResync() {
       where: {
         source_system: 'g2b_api',
         published_at: { [Op.ne]: null },
-        [Op.or]: [
-          { closing_at: null },
-          { closing_at: { [Op.gte]: now } },
-        ],
+        [Op.or]: [{ closing_at: null }, { closing_at: { [Op.gte]: now } }],
       },
       order: [['published_at', 'ASC']],
       raw: true,
@@ -243,18 +276,20 @@ async function runG2bOpenNoticeResync() {
 
     if (earliestOpenNotice?.published_at) {
       const buffered = new Date(
-        new Date(earliestOpenNotice.published_at).getTime()
-          - G2B_OPEN_RESYNC_BUFFER_HOURS * 60 * 60 * 1000
+        new Date(earliestOpenNotice.published_at).getTime() -
+          G2B_OPEN_RESYNC_BUFFER_HOURS * 60 * 60 * 1000
       );
 
       const maxLookbackFloor = new Date(
-        now.getTime() - G2B_OPEN_RESYNC_MAX_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
+        now.getTime() -
+          G2B_OPEN_RESYNC_MAX_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
       );
 
       fromDate = buffered < maxLookbackFloor ? maxLookbackFloor : buffered;
     } else {
       fromDate = new Date(
-        now.getTime() - G2B_OPEN_RESYNC_FALLBACK_DAYS * 24 * 60 * 60 * 1000
+        now.getTime() -
+          G2B_OPEN_RESYNC_FALLBACK_DAYS * 24 * 60 * 60 * 1000
       );
     }
 
@@ -298,6 +333,56 @@ async function runSeoulContractTwiceDaily() {
   }
 }
 
+async function runLocalGovRegularCollection(reason = 'scheduled', options = {}) {
+  if (!isSourceEnabled('local_gov')) {
+    console.log('[스케줄러] local_gov 비활성화 상태');
+    return;
+  }
+
+  if (runningLocalGovJob) {
+    console.log('[스케줄러] local_gov 수집 이미 실행 중, 건너뜀');
+    return;
+  }
+
+  runningLocalGovJob = true;
+
+  try {
+    const configuredKeys = parseCsvList(process.env.LOCAL_GOV_KEYS);
+    const targetKeys =
+      Array.isArray(options.keys) && options.keys.length
+        ? options.keys
+        : configuredKeys.length
+        ? configuredKeys
+        : undefined;
+
+    const maxPages =
+      Number(options.maxPages) > 0
+        ? Number(options.maxPages)
+        : LOCAL_GOV_MAX_PAGES;
+
+    console.log(
+      `[스케줄러] local_gov 정기 수집 실행 (${reason}) — maxPages=${maxPages}${
+        targetKeys?.length ? ` keys=${targetKeys.join(',')}` : ''
+      }`
+    );
+
+    await purgeExpiredNotices();
+
+    const result = await localGovCrawler.crawl({
+      maxPages,
+      ...(targetKeys?.length ? { keys: targetKeys } : {}),
+    });
+
+    console.log(
+      `[스케줄러] local_gov 정기 수집 완료 (${reason}) — parsed=${result.parsed} kept=${result.kept} new=${result.newCount} updated=${result.updatedCount} errors=${result.errorCount}`
+    );
+  } catch (err) {
+    console.error(`[스케줄러] local_gov 정기 수집 실패 (${reason})`, err.message);
+  } finally {
+    runningLocalGovJob = false;
+  }
+}
+
 async function initialLoad() {
   try {
     const count = await Notice.count();
@@ -305,6 +390,12 @@ async function initialLoad() {
 
     await purgeExpiredNotices();
     await runG2bStartupBackfill();
+
+    if (LOCAL_GOV_STARTUP_ENABLED) {
+      await runLocalGovRegularCollection('startup', {
+        maxPages: LOCAL_GOV_STARTUP_MAX_PAGES,
+      });
+    }
 
     // 초기 기동 시에는 서울 계약마당 자동 실행하지 않음
     // (페이지 부담 최소화 목적)
@@ -331,6 +422,11 @@ function start() {
     timezone: 'Asia/Seoul',
   });
 
+  // local_gov 정기수집
+  cron.schedule(LOCAL_GOV_CRON, () => runLocalGovRegularCollection('scheduled'), {
+    timezone: 'Asia/Seoul',
+  });
+
   // 만료 공고 정리: 매일 00:05 KST
   cron.schedule('5 0 * * *', purgeExpiredNotices, {
     timezone: 'Asia/Seoul',
@@ -347,7 +443,10 @@ function start() {
 
   console.log('[스케줄러] 분단위 수집 등록 완료');
   console.log(`[스케줄러] G2B 보정 수집 등록 완료 (${G2B_BACKFILL_CRON})`);
-  console.log(`[스케줄러] G2B 미마감 재동기화 등록 완료 (${G2B_OPEN_RESYNC_CRON})`);
+  console.log(
+    `[스케줄러] G2B 미마감 재동기화 등록 완료 (${G2B_OPEN_RESYNC_CRON})`
+  );
+  console.log(`[스케줄러] local_gov 정기 수집 등록 완료 (${LOCAL_GOV_CRON})`);
   console.log('[스케줄러] 만료 삭제 스케줄 등록 완료 (매일 00:05 KST)');
   console.log('[스케줄러] 서울 계약마당 스케줄 등록 완료 (매일 09:00, 17:00 KST)');
 
@@ -365,4 +464,5 @@ module.exports = {
   runG2bBackfill,
   runG2bStartupBackfill,
   runG2bOpenNoticeResync,
+  runLocalGovRegularCollection,
 };
