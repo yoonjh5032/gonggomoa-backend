@@ -538,6 +538,78 @@ function parseDateTime(text) {
     )}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}+09:00`
   );
 }
+function normalizeDateInput(value, { endOfDay = false } = {}) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  const raw = cleanText(String(value));
+  if (!raw) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return new Date(`${raw}T${endOfDay ? '23:59:59' : '00:00:00'}+09:00`);
+  }
+
+  const parsed = parseDateTime(raw);
+  if (parsed) return parsed;
+
+  const fallback = new Date(raw);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+function buildDateWindow(options = {}) {
+  const endDate =
+    normalizeDateInput(options.endDate, { endOfDay: true }) || new Date();
+
+  const startDate =
+    normalizeDateInput(options.startDate) ||
+    (Number(options.lookbackDays) > 0
+      ? new Date(
+          endDate.getTime() - Number(options.lookbackDays) * 24 * 60 * 60 * 1000
+        )
+      : null);
+
+  return {
+    startDate,
+    endDate,
+  };
+}
+
+function pickReferenceDate(parsedDetail = {}) {
+  if (parsedDetail.publishedAt instanceof Date && !Number.isNaN(parsedDetail.publishedAt.getTime())) {
+    return parsedDetail.publishedAt;
+  }
+
+  if (parsedDetail.closingAt instanceof Date && !Number.isNaN(parsedDetail.closingAt.getTime())) {
+    return parsedDetail.closingAt;
+  }
+
+  return null;
+}
+
+function isWithinDateWindow(parsedDetail, window) {
+  if (!window?.startDate && !window?.endDate) return true;
+
+  const refDate = pickReferenceDate(parsedDetail);
+  if (!refDate) return true;
+
+  if (window.startDate && refDate < window.startDate) return false;
+  if (window.endDate && refDate > window.endDate) return false;
+
+  return true;
+}
+
+function formatDateWindowForLog(window) {
+  const fmt = (d) =>
+    d instanceof Date && !Number.isNaN(d.getTime())
+      ? d.toISOString().slice(0, 10)
+      : '';
+
+  if (!window?.startDate && !window?.endDate) return '';
+  return `${fmt(window.startDate)}~${fmt(window.endDate)}`;
+}
 
 function extractPublishedAt(html) {
   const raw = extractFieldValue(html, ['등록일', '작성일', '게시일', '공고일', '공고일자']);
@@ -759,6 +831,7 @@ async function saveNotice(doc) {
 
 async function crawlSource(source, options = {}) {
   const defaults = getDefaultOptions();
+  const dateWindow = buildDateWindow(options);
 
   if (!source.enabled) {
     return {
@@ -770,6 +843,7 @@ async function crawlSource(source, options = {}) {
       savedNew: 0,
       savedUpdated: 0,
       errors: 0,
+      dateWindow: formatDateWindowForLog(dateWindow),
     };
   }
 
@@ -797,6 +871,11 @@ async function crawlSource(source, options = {}) {
       parsed += 1;
 
       if (!parsedDetail.title && !parsedDetail.bodyText) {
+        continue;
+      }
+
+      // startup/lookback 보정수집 기간 필터
+      if (!isWithinDateWindow(parsedDetail, dateWindow)) {
         continue;
       }
 
@@ -833,8 +912,10 @@ async function crawlSource(source, options = {}) {
     savedNew,
     savedUpdated,
     errors,
+    dateWindow: formatDateWindowForLog(dateWindow),
   };
 }
+
 
 async function crawl(options = {}) {
   const sources = getSourceList().filter((s) => s.enabled !== false);
@@ -848,10 +929,18 @@ async function crawl(options = {}) {
     ? sources.filter((s) => onlyKeys.has(s.key))
     : sources;
 
+  const dateWindow = buildDateWindow(options);
+
   console.log(
     `[LOCAL GOV] 수집 시작 — 대상 ${targetSources.length}개 구청 (${targetSources
       .map((s) => s.key)
-      .join(', ')})`
+      .join(', ')})${
+      options.lookbackDays ? ` / 최근 ${Number(options.lookbackDays)}일` : ''
+    }${
+      formatDateWindowForLog(dateWindow)
+        ? ` / 기간 ${formatDateWindowForLog(dateWindow)}`
+        : ''
+    }`
   );
 
   const results = [];
@@ -873,7 +962,9 @@ async function crawl(options = {}) {
       errors += r.errors || 0;
 
       console.log(
-        `[LOCAL GOV] ${source.district_name} 완료 — parsed=${r.parsed} kept=${r.kept} new=${r.savedNew} updated=${r.savedUpdated} errors=${r.errors}`
+        `[LOCAL GOV] ${source.district_name} 완료 — parsed=${r.parsed} kept=${r.kept} new=${r.savedNew} updated=${r.savedUpdated} errors=${r.errors}${
+          r.dateWindow ? ` period=${r.dateWindow}` : ''
+        }`
       );
     } catch (err) {
       errors += 1;
@@ -887,12 +978,17 @@ async function crawl(options = {}) {
         savedNew: 0,
         savedUpdated: 0,
         errors: 1,
+        dateWindow: formatDateWindowForLog(dateWindow),
       });
     }
   }
 
   console.log(
-    `[LOCAL GOV] 완료 — parsed=${parsed}, kept=${kept}, new=${savedNew}, updated=${savedUpdated}, errors=${errors}`
+    `[LOCAL GOV] 완료 — parsed=${parsed}, kept=${kept}, new=${savedNew}, updated=${savedUpdated}, errors=${errors}${
+      formatDateWindowForLog(dateWindow)
+        ? `, period=${formatDateWindowForLog(dateWindow)}`
+        : ''
+    }`
   );
 
   return {
@@ -904,6 +1000,7 @@ async function crawl(options = {}) {
     results,
   };
 }
+
 
 module.exports = {
   crawl,
