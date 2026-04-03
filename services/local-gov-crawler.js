@@ -843,6 +843,10 @@ async function crawlSource(source, options = {}) {
       savedNew: 0,
       savedUpdated: 0,
       errors: 0,
+      droppedByDate: 0,
+      droppedByKeyword: 0,
+      droppedByInactive: 0,
+      droppedByEmpty: 0,
       dateWindow: formatDateWindowForLog(dateWindow),
     };
   }
@@ -855,6 +859,11 @@ async function crawlSource(source, options = {}) {
   let savedNew = 0;
   let savedUpdated = 0;
   let errors = 0;
+
+  let droppedByDate = 0;
+  let droppedByKeyword = 0;
+  let droppedByInactive = 0;
+  let droppedByEmpty = 0;
 
   const seen = new Set();
 
@@ -871,19 +880,22 @@ async function crawlSource(source, options = {}) {
       parsed += 1;
 
       if (!parsedDetail.title && !parsedDetail.bodyText) {
+        droppedByEmpty += 1;
         continue;
       }
 
-      // startup/lookback 보정수집 기간 필터
       if (!isWithinDateWindow(parsedDetail, dateWindow)) {
+        droppedByDate += 1;
         continue;
       }
 
       if (!shouldKeepNotice(source, parsedDetail.title, parsedDetail.bodyText)) {
+        droppedByKeyword += 1;
         continue;
       }
 
       if (defaults.active_post_only && !isActiveNotice(parsedDetail.closingAt)) {
+        droppedByInactive += 1;
         continue;
       }
 
@@ -912,9 +924,14 @@ async function crawlSource(source, options = {}) {
     savedNew,
     savedUpdated,
     errors,
+    droppedByDate,
+    droppedByKeyword,
+    droppedByInactive,
+    droppedByEmpty,
     dateWindow: formatDateWindowForLog(dateWindow),
   };
 }
+
 
 
 async function crawl(options = {}) {
@@ -950,6 +967,11 @@ async function crawl(options = {}) {
   let savedUpdated = 0;
   let errors = 0;
 
+  let droppedByDate = 0;
+  let droppedByKeyword = 0;
+  let droppedByInactive = 0;
+  let droppedByEmpty = 0;
+
   for (const source of targetSources) {
     try {
       const r = await crawlSource(source, options);
@@ -961,8 +983,13 @@ async function crawl(options = {}) {
       savedUpdated += r.savedUpdated || 0;
       errors += r.errors || 0;
 
+      droppedByDate += r.droppedByDate || 0;
+      droppedByKeyword += r.droppedByKeyword || 0;
+      droppedByInactive += r.droppedByInactive || 0;
+      droppedByEmpty += r.droppedByEmpty || 0;
+
       console.log(
-        `[LOCAL GOV] ${source.district_name} 완료 — parsed=${r.parsed} kept=${r.kept} new=${r.savedNew} updated=${r.savedUpdated} errors=${r.errors}${
+        `[LOCAL GOV] ${source.district_name} 완료 — parsed=${r.parsed} kept=${r.kept} new=${r.savedNew} updated=${r.savedUpdated} errors=${r.errors} droppedByDate=${r.droppedByDate || 0} droppedByKeyword=${r.droppedByKeyword || 0} droppedByInactive=${r.droppedByInactive || 0} droppedByEmpty=${r.droppedByEmpty || 0}${
           r.dateWindow ? ` period=${r.dateWindow}` : ''
         }`
       );
@@ -978,13 +1005,17 @@ async function crawl(options = {}) {
         savedNew: 0,
         savedUpdated: 0,
         errors: 1,
+        droppedByDate: 0,
+        droppedByKeyword: 0,
+        droppedByInactive: 0,
+        droppedByEmpty: 0,
         dateWindow: formatDateWindowForLog(dateWindow),
       });
     }
   }
 
   console.log(
-    `[LOCAL GOV] 완료 — parsed=${parsed}, kept=${kept}, new=${savedNew}, updated=${savedUpdated}, errors=${errors}${
+    `[LOCAL GOV] 완료 — parsed=${parsed}, kept=${kept}, new=${savedNew}, updated=${savedUpdated}, errors=${errors}, droppedByDate=${droppedByDate}, droppedByKeyword=${droppedByKeyword}, droppedByInactive=${droppedByInactive}, droppedByEmpty=${droppedByEmpty}${
       formatDateWindowForLog(dateWindow)
         ? `, period=${formatDateWindowForLog(dateWindow)}`
         : ''
@@ -997,9 +1028,14 @@ async function crawl(options = {}) {
     newCount: savedNew,
     updatedCount: savedUpdated,
     errorCount: errors,
+    droppedByDate,
+    droppedByKeyword,
+    droppedByInactive,
+    droppedByEmpty,
     results,
   };
 }
+
 
 
 module.exports = {
