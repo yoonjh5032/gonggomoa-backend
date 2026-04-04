@@ -890,11 +890,6 @@ const keywordDropSamples = [];
   let savedUpdated = 0;
   let errors = 0;
 
-  let droppedByDate = 0;
-  let droppedByKeyword = 0;
-  let droppedByInactive = 0;
-  let droppedByEmpty = 0;
-
   const seen = new Set();
 
   for (const detailUrl of candidateLinks) {
