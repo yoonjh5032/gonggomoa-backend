@@ -856,12 +856,6 @@ async function saveNotice(doc) {
 async function crawlSource(source, options = {}) {
   const defaults = getDefaultOptions();
   const dateWindow = buildDateWindow(options);
-let droppedByDate = 0;
-let droppedByKeyword = 0;
-let droppedByInactive = 0;
-let droppedByEmpty = 0;
-
-const keywordDropSamples = [];
 
   if (!source.enabled) {
     return {
@@ -890,6 +884,12 @@ const keywordDropSamples = [];
   let savedUpdated = 0;
   let errors = 0;
 
+  let droppedByDate = 0;
+  let droppedByKeyword = 0;
+  let droppedByInactive = 0;
+  let droppedByEmpty = 0;
+
+  const keywordDropSamples = [];
   const seen = new Set();
 
   for (const detailUrl of candidateLinks) {
@@ -915,26 +915,24 @@ const keywordDropSamples = [];
       }
 
       const keywordGate = evaluateKeywordGate(
-  source,
-  parsedDetail.title,
-  parsedDetail.bodyText,
-  options
-);
+        source,
+        parsedDetail.title,
+        parsedDetail.bodyText,
+        options
+      );
 
-if (!keywordGate.keep) {
-  droppedByKeyword += 1;
+      if (!keywordGate.keep) {
+        droppedByKeyword += 1;
 
-  if (keywordDropSamples.length < 3) {
-    keywordDropSamples.push({
-      reason: keywordGate.reason,
-      title: keywordGate.titleText || '(제목 없음)',
-    });
-  }
+        if (keywordDropSamples.length < 3) {
+          keywordDropSamples.push({
+            reason: keywordGate.reason,
+            title: keywordGate.titleText || '(제목 없음)',
+          });
+        }
 
-  continue;
-}
-
-
+        continue;
+      }
 
       if (defaults.active_post_only && !isActiveNotice(parsedDetail.closingAt)) {
         droppedByInactive += 1;
@@ -957,6 +955,14 @@ if (!keywordGate.keep) {
     }
   }
 
+  if (keywordDropSamples.length > 0) {
+    console.log(
+      `[LOCAL GOV] ${source.district_name} keyword 탈락 샘플 — ${keywordDropSamples
+        .map((s, idx) => `#${idx + 1}[${s.reason}] ${s.title}`)
+        .join(' | ')}`
+    );
+  }
+
   return {
     key: source.key,
     district_name: source.district_name,
@@ -973,6 +979,7 @@ if (!keywordGate.keep) {
     dateWindow: formatDateWindowForLog(dateWindow),
   };
 }
+
 
 
 
