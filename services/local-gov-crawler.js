@@ -25,6 +25,21 @@ const REQUEST_HEADERS = {
 const RELAXED_STARTUP_INCLUDE_REGEX =
   /(공고|모집|용역|입찰|위탁|제안서|사업자|수탁|협상|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행)/i;
 
+const GENERIC_PORTAL_TITLE_PATTERNS = [
+  /^관악소개$/i,
+  /^강북소개$/i,
+  /^gang-buk\s*강북소개$/i,
+  /^구로구청$/i,
+  /^전체메뉴$/i,
+  /^통합검색$/i,
+  /^종합민원$/i,
+  /^홈페이지$/i,
+  /^메인$/i,
+  /^새로운 변화 행복한 용산$/i,
+  /^대외수상평가\s*-->\s*새로운 변화 행복한 용산$/i,
+  /^종합민원\s+강북구민을 위한 신속하고 편리한 민원처리를 위해 최선을 다하겠습니다\.?$/i,
+];
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -136,18 +151,7 @@ function buildListPageUrls(source, maxPages = 3) {
 function isGenericPortalTitle(title = '') {
   const t = cleanText(title);
   if (!t) return true;
-
-  return [
-    '관악소개',
-    '강북소개',
-    'Gang-buk 강북소개',
-    '구로구청',
-    '전체메뉴',
-    '새로운 변화 행복한 용산',
-    '대외수상평가 --> 새로운 변화 행복한 용산',
-    '홈페이지',
-    '메인',
-  ].some((v) => t === v || t.includes(v));
+  return GENERIC_PORTAL_TITLE_PATTERNS.some((re) => re.test(t));
 }
 
 function extractTitle(html) {
@@ -271,6 +275,7 @@ function filterItemsByTitleRules(items, source) {
   return items.filter((item) => {
     const text = cleanText(item.text || '');
     if (!text) return false;
+    if (isGenericPortalTitle(text)) return false;
     if (excludeRegex && excludeRegex.test(text)) return false;
     if (includeRegex && includeRegex.test(text)) return true;
     return false;
@@ -682,6 +687,18 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
   const titleText = cleanText(title);
   const body = cleanText(bodyText);
 
+  if (isStartupBackfill) {
+    if (includeRegex && (includeRegex.test(titleText) || includeRegex.test(body))) {
+      return { keep: true, reason: 'startup-include-match', titleText, bodyText: body };
+    }
+
+    if (excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body))) {
+      return { keep: false, reason: 'exclude', titleText, bodyText: body };
+    }
+
+    return { keep: false, reason: 'no-include', titleText, bodyText: body };
+  }
+
   if (excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body))) {
     return { keep: false, reason: 'exclude', titleText, bodyText: body };
   }
@@ -809,6 +826,7 @@ async function crawlSource(source, options = {}) {
       droppedByKeyword: 0,
       droppedByInactive: 0,
       droppedByEmpty: 0,
+      droppedByGenericTitle: 0,
       dateWindow: formatDateWindowForLog(dateWindow),
     };
   }
@@ -826,8 +844,10 @@ async function crawlSource(source, options = {}) {
   let droppedByKeyword = 0;
   let droppedByInactive = 0;
   let droppedByEmpty = 0;
+  let droppedByGenericTitle = 0;
 
   const keywordDropSamples = [];
+  const genericTitleSamples = [];
   const seen = new Set();
 
   for (const detailUrl of candidateLinks) {
@@ -845,8 +865,16 @@ async function crawlSource(source, options = {}) {
       const normalizedTitle = cleanText(parsedDetail.title || '');
       const normalizedBody = cleanText(parsedDetail.bodyText || '');
 
-      if ((!normalizedTitle && !normalizedBody) || isGenericPortalTitle(normalizedTitle)) {
+      if (!normalizedTitle && !normalizedBody) {
         droppedByEmpty += 1;
+        continue;
+      }
+
+      if (isGenericPortalTitle(normalizedTitle)) {
+        droppedByGenericTitle += 1;
+        if (genericTitleSamples.length < 3) {
+          genericTitleSamples.push(normalizedTitle || '(제목 없음)');
+        }
         continue;
       }
 
@@ -894,6 +922,14 @@ async function crawlSource(source, options = {}) {
     }
   }
 
+  if (genericTitleSamples.length > 0) {
+    console.log(
+      `[LOCAL GOV] ${source.district_name} generic title 샘플 — ${genericTitleSamples
+        .map((title, idx) => `#${idx + 1} ${title}`)
+        .join(' | ')}`
+    );
+  }
+
   if (keywordDropSamples.length > 0) {
     console.log(
       `[LOCAL GOV] ${source.district_name} keyword 탈락 샘플 — ${keywordDropSamples
@@ -915,6 +951,7 @@ async function crawlSource(source, options = {}) {
     droppedByKeyword,
     droppedByInactive,
     droppedByEmpty,
+    droppedByGenericTitle,
     dateWindow: formatDateWindowForLog(dateWindow),
   };
 }
@@ -953,6 +990,7 @@ async function crawl(options = {}) {
   let droppedByKeyword = 0;
   let droppedByInactive = 0;
   let droppedByEmpty = 0;
+  let droppedByGenericTitle = 0;
 
   for (const source of targetSources) {
     try {
@@ -969,9 +1007,10 @@ async function crawl(options = {}) {
       droppedByKeyword += r.droppedByKeyword || 0;
       droppedByInactive += r.droppedByInactive || 0;
       droppedByEmpty += r.droppedByEmpty || 0;
+      droppedByGenericTitle += r.droppedByGenericTitle || 0;
 
       console.log(
-        `[LOCAL GOV] ${source.district_name} 완료 — parsed=${r.parsed} kept=${r.kept} new=${r.savedNew} updated=${r.savedUpdated} errors=${r.errors} droppedByDate=${r.droppedByDate || 0} droppedByKeyword=${r.droppedByKeyword || 0} droppedByInactive=${r.droppedByInactive || 0} droppedByEmpty=${r.droppedByEmpty || 0}${
+        `[LOCAL GOV] ${source.district_name} 완료 — parsed=${r.parsed} kept=${r.kept} new=${r.savedNew} updated=${r.savedUpdated} errors=${r.errors} droppedByDate=${r.droppedByDate || 0} droppedByKeyword=${r.droppedByKeyword || 0} droppedByInactive=${r.droppedByInactive || 0} droppedByEmpty=${r.droppedByEmpty || 0} droppedByGenericTitle=${r.droppedByGenericTitle || 0}${
           r.dateWindow ? ` period=${r.dateWindow}` : ''
         }`
       );
@@ -991,13 +1030,14 @@ async function crawl(options = {}) {
         droppedByKeyword: 0,
         droppedByInactive: 0,
         droppedByEmpty: 0,
+        droppedByGenericTitle: 0,
         dateWindow: formatDateWindowForLog(dateWindow),
       });
     }
   }
 
   console.log(
-    `[LOCAL GOV] 완료 — parsed=${parsed}, kept=${kept}, new=${savedNew}, updated=${savedUpdated}, errors=${errors}, droppedByDate=${droppedByDate}, droppedByKeyword=${droppedByKeyword}, droppedByInactive=${droppedByInactive}, droppedByEmpty=${droppedByEmpty}${
+    `[LOCAL GOV] 완료 — parsed=${parsed}, kept=${kept}, new=${savedNew}, updated=${savedUpdated}, errors=${errors}, droppedByDate=${droppedByDate}, droppedByKeyword=${droppedByKeyword}, droppedByInactive=${droppedByInactive}, droppedByEmpty=${droppedByEmpty}, droppedByGenericTitle=${droppedByGenericTitle}${
       formatDateWindowForLog(dateWindow)
         ? `, period=${formatDateWindowForLog(dateWindow)}`
         : ''
@@ -1014,6 +1054,7 @@ async function crawl(options = {}) {
     droppedByKeyword,
     droppedByInactive,
     droppedByEmpty,
+    droppedByGenericTitle,
     results,
   };
 }
