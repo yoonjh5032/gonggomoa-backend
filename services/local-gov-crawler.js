@@ -134,6 +134,23 @@ function buildListPageUrls(source, maxPages = 3) {
 
   return urls;
 }
+function isGenericPortalTitle(title = '') {
+  const t = cleanText(title);
+
+  if (!t) return true;
+
+  return [
+    '관악소개',
+    '강북소개',
+    'Gang-buk 강북소개',
+    '구로구청',
+    '전체메뉴',
+    '새로운 변화 행복한 용산',
+    '대외수상평가 --> 새로운 변화 행복한 용산',
+    '홈페이지',
+    '메인',
+  ].some((v) => t === v || t.includes(v));
+}
 
 function extractTitle(html) {
   const patterns = [
@@ -158,10 +175,14 @@ function extractTitle(html) {
     if (v) return v;
   }
 
-  const titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (titleTag) {
-    return cleanText(titleTag[1]);
+  cconst titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+if (titleTag) {
+  const fallbackTitle = cleanText(titleTag[1]);
+  if (!isGenericPortalTitle(fallbackTitle)) {
+    return fallbackTitle;
   }
+}
+
 
   return '';
 }
@@ -902,12 +923,19 @@ async function crawlSource(source, options = {}) {
         source.list_url || source.detail_hint?.entry_url || ''
       );
       const parsedDetail = parseDetailByType(html, detailUrl, source);
-      parsed += 1;
+parsed += 1;
 
-      if (!parsedDetail.title && !parsedDetail.bodyText) {
-        droppedByEmpty += 1;
-        continue;
-      }
+const normalizedTitle = cleanText(parsedDetail.title || '');
+const normalizedBody = cleanText(parsedDetail.bodyText || '');
+
+if (
+  (!normalizedTitle && !normalizedBody) ||
+  isGenericPortalTitle(normalizedTitle)
+) {
+  droppedByEmpty += 1;
+  continue;
+}
+
 
       if (!isWithinDateWindow(parsedDetail, dateWindow)) {
         droppedByDate += 1;
