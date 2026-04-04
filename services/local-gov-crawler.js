@@ -712,7 +712,7 @@ function isActiveNotice(closingAt) {
 const RELAXED_STARTUP_INCLUDE_REGEX =
   /(공고|모집|용역|입찰|위탁|제안서|사업자|수탁|협상|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행)/i;
 
-function shouldKeepNotice(source, title, bodyText, options = {}) {
+function evaluateKeywordGate(source, title, bodyText, options = {}) {
   const defaults = getDefaultOptions();
 
   const isStartupBackfill = Number(options.lookbackDays) > 0;
@@ -726,19 +726,35 @@ function shouldKeepNotice(source, title, bodyText, options = {}) {
   const titleText = cleanText(title);
   const body = cleanText(bodyText);
 
-  // 제외 키워드는 계속 우선 적용
   if (excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body))) {
-    return false;
+    return {
+      keep: false,
+      reason: 'exclude',
+      titleText,
+      bodyText: body,
+    };
   }
 
-  // startup 보정수집에서는 제목/본문 중 하나만 맞아도 통과
   if (includeRegex && (includeRegex.test(titleText) || includeRegex.test(body))) {
-    return true;
+    return {
+      keep: true,
+      reason: 'match',
+      titleText,
+      bodyText: body,
+    };
   }
 
-  return false;
+  return {
+    keep: false,
+    reason: 'no-include',
+    titleText,
+    bodyText: body,
+  };
 }
 
+function shouldKeepNotice(source, title, bodyText, options = {}) {
+  return evaluateKeywordGate(source, title, bodyText, options).keep;
+}
 
 
 function parseDetailGeneric(html, detailUrl, source) {
@@ -840,6 +856,12 @@ async function saveNotice(doc) {
 async function crawlSource(source, options = {}) {
   const defaults = getDefaultOptions();
   const dateWindow = buildDateWindow(options);
+let droppedByDate = 0;
+let droppedByKeyword = 0;
+let droppedByInactive = 0;
+let droppedByEmpty = 0;
+
+const keywordDropSamples = [];
 
   if (!source.enabled) {
     return {
@@ -897,10 +919,26 @@ async function crawlSource(source, options = {}) {
         continue;
       }
 
-      if (!shouldKeepNotice(source, parsedDetail.title, parsedDetail.bodyText, options)) {
+      const keywordGate = evaluateKeywordGate(
+  source,
+  parsedDetail.title,
+  parsedDetail.bodyText,
+  options
+);
+
+if (!keywordGate.keep) {
   droppedByKeyword += 1;
+
+  if (keywordDropSamples.length < 3) {
+    keywordDropSamples.push({
+      reason: keywordGate.reason,
+      title: keywordGate.titleText || '(제목 없음)',
+    });
+  }
+
   continue;
 }
+
 
 
       if (defaults.active_post_only && !isActiveNotice(parsedDetail.closingAt)) {
@@ -1030,6 +1068,13 @@ async function crawl(options = {}) {
         : ''
     }`
   );
+if (keywordDropSamples.length > 0) {
+  console.log(
+    `[LOCAL GOV] ${source.district_name} keyword 탈락 샘플 — ${keywordDropSamples
+      .map((s, idx) => `#${idx + 1}[${s.reason}] ${s.title}`)
+      .join(' | ')}`
+  );
+}
 
   return {
     parsed,
