@@ -175,7 +175,7 @@ function extractTitle(html) {
     if (v) return v;
   }
 
-  cconst titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
 if (titleTag) {
   const fallbackTitle = cleanText(titleTag[1]);
   if (!isGenericPortalTitle(fallbackTitle)) {
