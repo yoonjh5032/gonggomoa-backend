@@ -1098,9 +1098,9 @@ async function crawl(options = {}) {
         : ''
     }`
   );
-if (keywordDropSamples.length > 0) {
+
   console.log(
-    `[LOCAL GOV] ${source.district_name} keyword 탈락 샘플 — ${keywordDropSamples
+ 
       .map((s, idx) => `#${idx + 1}[${s.reason}] ${s.title}`)
       .join(' | ')}`
   );
