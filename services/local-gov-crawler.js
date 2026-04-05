@@ -202,26 +202,34 @@ function buildListPageUrls(source, maxPages = 3) {
 }
 
 function isGenericPortalTitle(title = '') {
-  const t = cleanText(title);
+  const t = cleanText(title)
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!t) return true;
 
   const genericPatterns = [
-    /^통합검색$/i,
-    /^전체메뉴$/i,
-    /^종합민원$/i,
-    /^홈페이지$/i,
-    /^메인$/i,
-    /^공지\/?새소식(?:\(상세화면\))?/i,
-    /^고시공고(?:\(상세화면\))?/i,
-    /^상세화면$/i,
-    /^구청소개$/i,
+    /^통합검색(?:\s|$)/i,
+    /^전체메뉴(?:\s|$)/i,
+    /^종합민원(?:\s|$)/i,
+    /^구정소식(?:\s|$)/i,
+    /^도시개발소식(?:\s|$)/i,
+    /^공고\/?고시(?:\s|$)/i,
+    /^공지\/?새소식(?:\s|$)/i,
+    /^고시공고(?:\s|$)/i,
+    /^상세화면(?:\s|$)/i,
+    /^구청소개(?:\s|$)/i,
+    /^홈페이지(?:\s|$)/i,
+    /^메인(?:\s|$)/i,
+    /^\(제목\)$/,
     /관악소개/,
     /강북소개/,
     /구로구청/,
     /서초구청/,
+    /중랑소식<중랑소개<중랑구청/,
     /Gang-buk 강북소개/,
     /새로운 변화 행복한 용산/,
     /대외수상평가\s*-->/,
+    /강북구민을 위한 신속하고 편리한 민원처리를 위해 최선을 다하겠습니다/,
   ];
 
   return genericPatterns.some((re) => re.test(t));
@@ -231,8 +239,10 @@ function extractTitle(html) {
   const patterns = [
     /<h1[^>]*>([\s\S]*?)<\/h1>/i,
     /<h2[^>]*>([\s\S]*?)<\/h2>/i,
+    /<h3[^>]*>([\s\S]*?)<\/h3>/i,
+    /<caption[^>]*>([\s\S]*?)<\/caption>/i,
     /<th[^>]*scope=["']row["'][^>]*>\s*제목\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i,
-    /<div[^>]*class="[^"]*(?:title|subject|board_tit|view_tit|tit)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+    /<div[^>]*class="[^"]*(?:title|subject|board_tit|view_tit|tit|bbsTitle|viewTitle)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
     /<strong[^>]*class="[^"]*(?:title|subject|tit)[^"]*"[^>]*>([\s\S]*?)<\/strong>/i,
     /<span[^>]*class="[^"]*(?:title|subject|tit)[^"]*"[^>]*>([\s\S]*?)<\/span>/i,
   ];
@@ -240,7 +250,7 @@ function extractTitle(html) {
   for (const re of patterns) {
     const m = html.match(re);
     if (m) {
-      const v = cleanText(m[1]);
+      const v = cleanText(m[1]).replace(/\s+-\s+정보.*$/, '').trim();
       if (v && !isGenericPortalTitle(v)) return v;
     }
   }
@@ -265,11 +275,40 @@ function extractTitle(html) {
     }
   }
 
+  const fallback = extractTitleFromBody(html);
+  if (fallback) return fallback;
+
   return '';
 }
 
 function extractBodyText(html) {
   return cleanText(html);
+}
+
+function extractTitleFromBody(html = '') {
+  const body = cleanText(html)
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!body) return '';
+
+  const patterns = [
+    /([「『\[]?[^「『\[\]]{4,120}?(?:입찰공고|공개 모집 공고|모집 공고|지정 공고))/,
+    /([「『\[]?[^「『\[\]]{4,120}?제안서 평가위원\(후보자\)[^「『\[\]]{0,40})/,
+    /([「『\[]?[^「『\[\]]{4,120}?용역[^「『\[\]]{0,40}공고)/,
+    /([「『\[]?[^「『\[\]]{4,120}?사업자[^「『\[\]]{0,30}모집[^「『\[\]]{0,20})/,
+    /([「『\[]?[^「『\[\]]{4,120}?수행기관 지정 공고)/,
+  ];
+
+  for (const re of patterns) {
+    const m = body.match(re);
+    if (!m) continue;
+    const candidate = cleanText(m[1]).replace(/\s+-\s+정보.*$/, '').trim();
+    if (candidate && !isGenericPortalTitle(candidate)) {
+      return candidate;
+    }
+  }
+
+  return '';
 }
 
 function extractAnchorsWithAttrs(html, baseUrl) {
@@ -588,7 +627,7 @@ async function collectCandidateLinks(source, options = {}) {
   if (shouldUseSeedOnlyParser(source)) {
     getSeedDetailLinks(source).forEach(push);
 
-    if (source.key === 'gangseo') {
+    if (source.key === 'gangseo' && isScheduledRegularCollection(options)) {
       const fallbackLinks = await collectGangseoFallbackLinks(source, options);
       fallbackLinks.forEach(push);
     }
@@ -717,6 +756,10 @@ function isStartupBackfill(options = {}) {
   return Number(options.lookbackDays) > 0;
 }
 
+function isScheduledRegularCollection(options = {}) {
+  return !isStartupBackfill(options);
+}
+
 function pickReferenceDate(parsedDetail = {}) {
   if (parsedDetail.publishedAt instanceof Date && !Number.isNaN(parsedDetail.publishedAt.getTime())) {
     return parsedDetail.publishedAt;
@@ -841,6 +884,7 @@ function isActiveNotice(closingAt) {
 function evaluateKeywordGate(source, title, bodyText, options = {}) {
   const defaults = getDefaultOptions();
   const startupBackfill = isStartupBackfill(options);
+  const scheduledRegular = isScheduledRegularCollection(options);
 
   const includeRegex = startupBackfill
     ? RELAXED_STARTUP_INCLUDE_REGEX
@@ -855,6 +899,10 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
 
   if (startupBackfill && includeMatched) {
     return { keep: true, reason: 'startup-include-match', titleText, bodyText: body };
+  }
+
+  if (scheduledRegular && includeMatched) {
+    return { keep: true, reason: 'scheduled-include-match', titleText, bodyText: body };
   }
 
   if (excludeMatched) {
