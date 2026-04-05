@@ -67,8 +67,6 @@ function buildExcludedSuidamReadCondition() {
       AND (
         bid_method = '전자시담'
         OR contract_method = '수의시담'
-        OR CAST(raw_data AS CHAR) LIKE '%sucsfbidMthdCdNm%수의시담%'
-
       )
     )
   `);
