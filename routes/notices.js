@@ -1,7 +1,8 @@
 /* routes/notices.js — 공고 조회 API (MySQL / Sequelize) */
 const router = require('express').Router();
-const { Op, fn, col } = require('sequelize');
+const { Op, fn, col, literal } = require('sequelize');
 const Notice = require('../models/Notice');
+
 const CALENDAR_CACHE_TTL = 1000 * 60 * 2; // 2분 캐시
 const calendarCache = new Map();
 
@@ -40,6 +41,7 @@ function buildActiveNoticeCondition(now = new Date()) {
 function normalizeKeywords(raw) {
   if (!raw) return [];
   const list = Array.isArray(raw) ? raw : String(raw).split(',');
+
   return [...new Set(
     list
       .map(v => String(v || '').trim())
@@ -48,20 +50,58 @@ function normalizeKeywords(raw) {
   )].slice(0, 10);
 }
 
+/**
+ * 조회 시 숨길 G2B 공고 조건
+ *
+ * 제외 대상:
+ * - 입찰방식 = 전자시담
+ * - 낙찰방법 = 수의시담
+ * - 낙찰방법세부기준 = 수의시담
+ *
+ * 저장 컬럼 + raw_data(JSON) 모두 확인
+ */
+function buildExcludedSuidamReadCondition() {
+  return literal(`
+    NOT (
+      source_system = 'g2b_api'
+      AND (
+        bid_method = '전자시담'
+        OR contract_method = '수의시담'
+        OR JSON_UNQUOTE(JSON_EXTRACT(raw_data, '$.bidMethdNm')) = '전자시담'
+        OR JSON_UNQUOTE(JSON_EXTRACT(raw_data, '$.cntrctMthdNm')) = '수의시담'
+        OR JSON_UNQUOTE(JSON_EXTRACT(raw_data, '$.sucsfbidMthdCdNm')) = '수의시담'
+        OR JSON_SEARCH(raw_data, 'one', '전자시담', NULL, '$.bidMethdNm') IS NOT NULL
+        OR JSON_SEARCH(raw_data, 'one', '수의시담', NULL, '$.cntrctMthdNm') IS NOT NULL
+        OR JSON_SEARCH(raw_data, 'one', '수의시담', NULL, '$.sucsfbidMthdCdNm') IS NOT NULL
+      )
+    )
+  `);
+}
+
 /* ════════════════════════════════════════════════
    GET /api/notices
 ════════════════════════════════════════════════ */
 router.get('/', async (req, res) => {
   try {
     const {
-      q, source, type, sortBy,
-      daysLeft, deadline, keywords: rawKeywords,
-      limit: rawLimit, page: rawPage
+      q,
+      source,
+      type,
+      sortBy,
+      daysLeft,
+      deadline,
+      keywords: rawKeywords,
+      limit: rawLimit,
+      page: rawPage
     } = req.query;
 
     const keywordList = normalizeKeywords(rawKeywords);
+
     const where = {
-      [Op.and]: [buildActiveNoticeCondition()]
+      [Op.and]: [
+        buildActiveNoticeCondition(),
+        buildExcludedSuidamReadCondition()
+      ]
     };
 
     if (q && q.trim()) {
@@ -77,11 +117,13 @@ router.get('/', async (req, res) => {
 
     if (keywordList.length) {
       const keywordOr = [];
+
       keywordList.forEach((kw) => {
         keywordOr.push({ title: { [Op.like]: `%${kw}%` } });
         keywordOr.push({ issuing_org: { [Op.like]: `%${kw}%` } });
         keywordOr.push({ demanding_org: { [Op.like]: `%${kw}%` } });
       });
+
       where[Op.and].push({ [Op.or]: keywordOr });
     }
 
@@ -111,10 +153,11 @@ router.get('/', async (req, res) => {
       raw: true
     });
 
-    const data = rows.map(n => ({
+    const data = rows.map((n) => ({
       ...n,
       closing_at: n.closing_at ? new Date(n.closing_at).toISOString() : null,
-      published_at: n.published_at ? new Date(n.published_at).toISOString() : null
+      published_at: n.published_at ? new Date(n.published_at).toISOString() : null,
+      opening_at: n.opening_at ? new Date(n.opening_at).toISOString() : null
     }));
 
     res.json({ data, total, page, limit });
@@ -134,16 +177,23 @@ router.get('/stats', async (req, res) => {
         'source_system',
         [fn('COUNT', col('id')), 'count']
       ],
-      where: buildActiveNoticeCondition(),
+      where: {
+        [Op.and]: [
+          buildActiveNoticeCondition(),
+          buildExcludedSuidamReadCondition()
+        ]
+      },
       group: ['source_system'],
       raw: true
     });
 
     const map = {};
     let total = 0;
-    rows.forEach(r => {
-      map[r.source_system] = parseInt(r.count, 10);
-      total += parseInt(r.count, 10);
+
+    rows.forEach((r) => {
+      const count = parseInt(r.count, 10) || 0;
+      map[r.source_system] = count;
+      total += count;
     });
 
     res.json({
@@ -154,6 +204,7 @@ router.get('/stats', async (req, res) => {
       total
     });
   } catch (err) {
+    console.error('[GET /notices/stats]', err);
     res.status(500).json({ error: '통계 조회 중 오류' });
   }
 });
@@ -195,7 +246,10 @@ router.get('/calendar/:year/:month', async (req, res) => {
         'detail_url'
       ],
       where: {
-        closing_at: { [Op.between]: [effectiveFrom, to] }
+        [Op.and]: [
+          { closing_at: { [Op.between]: [effectiveFrom, to] } },
+          buildExcludedSuidamReadCondition()
+        ]
       },
       order: [['closing_at', 'ASC']],
       raw: true
@@ -203,7 +257,7 @@ router.get('/calendar/:year/:month', async (req, res) => {
 
     const grouped = {};
 
-    list.forEach(n => {
+    list.forEach((n) => {
       const ds = new Date(n.closing_at).toISOString().slice(0, 10);
       if (!grouped[ds]) grouped[ds] = [];
 
@@ -233,10 +287,28 @@ router.get('/calendar/:year/:month', async (req, res) => {
 ════════════════════════════════════════════════ */
 router.get('/:id', async (req, res) => {
   try {
-    const notice = await Notice.findByPk(req.params.id, { raw: true });
-    if (!notice) return res.status(404).json({ error: '공고를 찾을 수 없습니다.' });
-    res.json(notice);
+    const notice = await Notice.findOne({
+      where: {
+        id: req.params.id,
+        [Op.and]: [
+          buildExcludedSuidamReadCondition()
+        ]
+      },
+      raw: true
+    });
+
+    if (!notice) {
+      return res.status(404).json({ error: '공고를 찾을 수 없습니다.' });
+    }
+
+    res.json({
+      ...notice,
+      closing_at: notice.closing_at ? new Date(notice.closing_at).toISOString() : null,
+      published_at: notice.published_at ? new Date(notice.published_at).toISOString() : null,
+      opening_at: notice.opening_at ? new Date(notice.opening_at).toISOString() : null
+    });
   } catch (err) {
+    console.error('[GET /notices/:id]', err);
     res.status(500).json({ error: '공고 조회 중 오류' });
   }
 });
