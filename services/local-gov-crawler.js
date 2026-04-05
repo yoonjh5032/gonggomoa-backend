@@ -1,12 +1,26 @@
 const axios = require('axios');
+const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
+
+let iconv = null;
+try {
+  // Optional dependency used for EUC-KR/CP949 responses such as some legacy district pages.
+  iconv = require('iconv-lite');
+} catch (_) {
+  iconv = null;
+}
 
 const Notice = require('../models/Notice');
 const sourceMap = require('../collectors/local-gov/sources');
 
 const SOURCE_SYSTEM = 'local_gov';
+
+const HTTP_AGENT = new http.Agent({
+  keepAlive: true,
+  maxSockets: 20,
+});
 
 const HTTPS_AGENT = new https.Agent({
   keepAlive: true,
@@ -24,21 +38,6 @@ const REQUEST_HEADERS = {
 
 const RELAXED_STARTUP_INCLUDE_REGEX =
   /(공고|모집|용역|입찰|위탁|제안서|사업자|수탁|협상|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행)/i;
-
-const GENERIC_PORTAL_TITLE_PATTERNS = [
-  /^관악소개$/i,
-  /^강북소개$/i,
-  /^gang-buk\s*강북소개$/i,
-  /^구로구청$/i,
-  /^전체메뉴$/i,
-  /^통합검색$/i,
-  /^종합민원$/i,
-  /^홈페이지$/i,
-  /^메인$/i,
-  /^새로운 변화 행복한 용산$/i,
-  /^대외수상평가\s*-->\s*새로운 변화 행복한 용산$/i,
-  /^종합민원\s+강북구민을 위한 신속하고 편리한 민원처리를 위해 최선을 다하겠습니다\.?$/i,
-];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,6 +103,57 @@ function getDefaultOptions() {
   return sourceMap.defaults || {};
 }
 
+function normalizeCharset(charset = '') {
+  const value = String(charset || '').trim().toLowerCase();
+  if (!value) return 'utf-8';
+  if (/^(euc-kr|cp949|x-windows-949|ks_c_5601-1987)$/i.test(value)) return 'cp949';
+  if (/^utf-?8$/i.test(value)) return 'utf-8';
+  if (/^iso-8859-1$/i.test(value)) return 'latin1';
+  return value;
+}
+
+function detectCharsetFromBuffer(buffer, headers = {}) {
+  const contentType = headers['content-type'] || headers['Content-Type'] || '';
+  const headerCharset = contentType.match(/charset=([^;]+)/i);
+  if (headerCharset && headerCharset[1]) {
+    return normalizeCharset(headerCharset[1]);
+  }
+
+  const head = Buffer.from(buffer).slice(0, 4096).toString('ascii');
+  const metaCharset =
+    head.match(/<meta[^>]+charset=["']?([^"'>\s]+)/i) ||
+    head.match(/<meta[^>]+content=["'][^"']*charset=([^"';>\s]+)/i);
+
+  if (metaCharset && metaCharset[1]) {
+    return normalizeCharset(metaCharset[1]);
+  }
+
+  return 'utf-8';
+}
+
+function decodeResponseBuffer(buffer, headers = {}) {
+  if (!buffer) return '';
+  const charset = detectCharsetFromBuffer(buffer, headers);
+
+  try {
+    if (iconv && charset !== 'utf-8') {
+      return iconv.decode(Buffer.from(buffer), charset);
+    }
+
+    if (charset === 'latin1') {
+      return Buffer.from(buffer).toString('latin1');
+    }
+
+    return Buffer.from(buffer).toString('utf8');
+  } catch (_) {
+    try {
+      return Buffer.from(buffer).toString('utf8');
+    } catch (_) {
+      return String(buffer || '');
+    }
+  }
+}
+
 async function fetchHtml(url, referer = '') {
   const res = await axios.get(url, {
     headers: {
@@ -111,13 +161,16 @@ async function fetchHtml(url, referer = '') {
       ...(referer ? { Referer: referer } : {}),
     },
     timeout: Number(getDefaultOptions().parser_timeout_ms || 20000),
-    responseType: 'text',
+    responseType: 'arraybuffer',
+    httpAgent: HTTP_AGENT,
     httpsAgent: HTTPS_AGENT,
+    insecureHTTPParser: true,
     maxRedirects: 5,
+    decompress: true,
     validateStatus: (status) => status >= 200 && status < 400,
   });
 
-  return res.data;
+  return decodeResponseBuffer(res.data, res.headers || {});
 }
 
 function buildListPageUrls(source, maxPages = 3) {
@@ -151,7 +204,27 @@ function buildListPageUrls(source, maxPages = 3) {
 function isGenericPortalTitle(title = '') {
   const t = cleanText(title);
   if (!t) return true;
-  return GENERIC_PORTAL_TITLE_PATTERNS.some((re) => re.test(t));
+
+  const genericPatterns = [
+    /^통합검색$/i,
+    /^전체메뉴$/i,
+    /^종합민원$/i,
+    /^홈페이지$/i,
+    /^메인$/i,
+    /^공지\/?새소식(?:\(상세화면\))?/i,
+    /^고시공고(?:\(상세화면\))?/i,
+    /^상세화면$/i,
+    /^구청소개$/i,
+    /관악소개/,
+    /강북소개/,
+    /구로구청/,
+    /서초구청/,
+    /Gang-buk 강북소개/,
+    /새로운 변화 행복한 용산/,
+    /대외수상평가\s*-->/,
+  ];
+
+  return genericPatterns.some((re) => re.test(t));
 }
 
 function extractTitle(html) {
@@ -159,8 +232,9 @@ function extractTitle(html) {
     /<h1[^>]*>([\s\S]*?)<\/h1>/i,
     /<h2[^>]*>([\s\S]*?)<\/h2>/i,
     /<th[^>]*scope=["']row["'][^>]*>\s*제목\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i,
-    /<div[^>]*class="[^"]*title[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
-    /<strong[^>]*class="[^"]*title[^"]*"[^>]*>([\s\S]*?)<\/strong>/i,
+    /<div[^>]*class="[^"]*(?:title|subject|board_tit|view_tit|tit)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+    /<strong[^>]*class="[^"]*(?:title|subject|tit)[^"]*"[^>]*>([\s\S]*?)<\/strong>/i,
+    /<span[^>]*class="[^"]*(?:title|subject|tit)[^"]*"[^>]*>([\s\S]*?)<\/span>/i,
   ];
 
   for (const re of patterns) {
@@ -174,6 +248,12 @@ function extractTitle(html) {
   const og = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
   if (og) {
     const v = cleanText(og[1]);
+    if (v && !isGenericPortalTitle(v)) return v;
+  }
+
+  const metaTitle = html.match(/<meta[^>]+name=["']title["'][^>]+content=["']([^"']+)["']/i);
+  if (metaTitle) {
+    const v = cleanText(metaTitle[1]);
     if (v && !isGenericPortalTitle(v)) return v;
   }
 
@@ -250,6 +330,13 @@ function extractHrefFromOnclick(onclick, baseUrl) {
     return absoluteUrl(viewMatch[1], baseUrl);
   }
 
+  const gangseoViewMatch = raw.match(
+    /((?:https?:)?\/\/[^'"]+\/gs040301\/view\?[^'"]+|(?:https?:)?\/\/[^'"]+\/gs040101\/\d+(?:\?[^'"]*)?|\/gs040301\/view\?[^'"]+|\/gs040101\/\d+(?:\?[^'"]*)?)/i
+  );
+  if (gangseoViewMatch) {
+    return absoluteUrl(gangseoViewMatch[1], baseUrl);
+  }
+
   return '';
 }
 
@@ -275,7 +362,6 @@ function filterItemsByTitleRules(items, source) {
   return items.filter((item) => {
     const text = cleanText(item.text || '');
     if (!text) return false;
-    if (isGenericPortalTitle(text)) return false;
     if (excludeRegex && excludeRegex.test(text)) return false;
     if (includeRegex && includeRegex.test(text)) return true;
     return false;
@@ -418,6 +504,74 @@ function shouldUseSeedOnlyParser(source) {
   ].includes(source.parser_type);
 }
 
+async function collectGangseoFallbackLinks(source, options = {}) {
+  const pageLimit = Math.max(1, Math.min(Number(options.maxPages || 3), 5));
+  const requestDelayMs = Number(getDefaultOptions().request_delay_ms || 250);
+  const startupBackfill = isStartupBackfill(options);
+  const includeRegex = startupBackfill
+    ? RELAXED_STARTUP_INCLUDE_REGEX
+    : source.include_regex || getDefaultOptions().include_regex;
+  const excludeRegex = source.exclude_regex || getDefaultOptions().exclude_regex;
+
+  const boardDefs = [
+    {
+      baseUrl: 'https://www.gangseo.seoul.kr/gs040101',
+      itemPattern: /\/gs040101\/\d+(?:\?|$)/i,
+    },
+    {
+      baseUrl: 'https://www.gangseo.seoul.kr/gs040301',
+      itemPattern: /\/gs040301\/view\?/i,
+    },
+  ];
+
+  const out = [];
+  const seen = new Set();
+
+  for (const board of boardDefs) {
+    for (let page = 1; page <= pageLimit; page += 1) {
+      try {
+        const pageUrl = new URL(board.baseUrl);
+        if (page > 1) pageUrl.searchParams.set('curPage', String(page));
+
+        const html = await fetchHtml(pageUrl.toString(), board.baseUrl);
+        const anchors = extractAnchorsWithAttrs(html, board.baseUrl);
+
+        for (const anchor of anchors) {
+          const href = anchor.href || extractHrefFromOnclick(anchor.onclick, board.baseUrl);
+          const text = cleanText(anchor.text || '');
+
+          if (!href || !board.itemPattern.test(href) || !text) continue;
+          if (isGenericPortalTitle(text)) continue;
+
+          const includeMatched = includeRegex && includeRegex.test(text);
+          const excludeMatched = excludeRegex && excludeRegex.test(text);
+
+          if (startupBackfill) {
+            if (!includeMatched && excludeMatched) continue;
+            if (!includeMatched) continue;
+          } else {
+            if (excludeMatched) continue;
+            if (includeRegex && !includeMatched) continue;
+          }
+
+          if (!seen.has(href)) {
+            seen.add(href);
+            out.push(href);
+          }
+        }
+      } catch (err) {
+        console.error(`[LOCAL GOV] 강서구 fallback 목록 요청 실패 — ${board.baseUrl}`, err.message);
+      }
+
+      if (requestDelayMs > 0) {
+        await sleep(requestDelayMs);
+      }
+    }
+  }
+
+  return out;
+}
+
 async function collectCandidateLinks(source, options = {}) {
   const maxPages = Number(options.maxPages || 3);
   const requestDelayMs = Number(getDefaultOptions().request_delay_ms || 250);
@@ -433,6 +587,12 @@ async function collectCandidateLinks(source, options = {}) {
 
   if (shouldUseSeedOnlyParser(source)) {
     getSeedDetailLinks(source).forEach(push);
+
+    if (source.key === 'gangseo') {
+      const fallbackLinks = await collectGangseoFallbackLinks(source, options);
+      fallbackLinks.forEach(push);
+    }
+
     return collected;
   }
 
@@ -551,6 +711,10 @@ function buildDateWindow(options = {}) {
       : null);
 
   return { startDate, endDate };
+}
+
+function isStartupBackfill(options = {}) {
+  return Number(options.lookbackDays) > 0;
 }
 
 function pickReferenceDate(parsedDetail = {}) {
@@ -676,9 +840,9 @@ function isActiveNotice(closingAt) {
 
 function evaluateKeywordGate(source, title, bodyText, options = {}) {
   const defaults = getDefaultOptions();
-  const isStartupBackfill = Number(options.lookbackDays) > 0;
+  const startupBackfill = isStartupBackfill(options);
 
-  const includeRegex = isStartupBackfill
+  const includeRegex = startupBackfill
     ? RELAXED_STARTUP_INCLUDE_REGEX
     : source.include_regex || defaults.include_regex;
 
@@ -686,24 +850,18 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
 
   const titleText = cleanText(title);
   const body = cleanText(bodyText);
+  const includeMatched = includeRegex && (includeRegex.test(titleText) || includeRegex.test(body));
+  const excludeMatched = excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body));
 
-  if (isStartupBackfill) {
-    if (includeRegex && (includeRegex.test(titleText) || includeRegex.test(body))) {
-      return { keep: true, reason: 'startup-include-match', titleText, bodyText: body };
-    }
-
-    if (excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body))) {
-      return { keep: false, reason: 'exclude', titleText, bodyText: body };
-    }
-
-    return { keep: false, reason: 'no-include', titleText, bodyText: body };
+  if (startupBackfill && includeMatched) {
+    return { keep: true, reason: 'startup-include-match', titleText, bodyText: body };
   }
 
-  if (excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body))) {
+  if (excludeMatched) {
     return { keep: false, reason: 'exclude', titleText, bodyText: body };
   }
 
-  if (includeRegex && (includeRegex.test(titleText) || includeRegex.test(body))) {
+  if (includeMatched) {
     return { keep: true, reason: 'match', titleText, bodyText: body };
   }
 
@@ -847,7 +1005,7 @@ async function crawlSource(source, options = {}) {
   let droppedByGenericTitle = 0;
 
   const keywordDropSamples = [];
-  const genericTitleSamples = [];
+  const genericTitleDropSamples = [];
   const seen = new Set();
 
   for (const detailUrl of candidateLinks) {
@@ -872,8 +1030,8 @@ async function crawlSource(source, options = {}) {
 
       if (isGenericPortalTitle(normalizedTitle)) {
         droppedByGenericTitle += 1;
-        if (genericTitleSamples.length < 3) {
-          genericTitleSamples.push(normalizedTitle || '(제목 없음)');
+        if (genericTitleDropSamples.length < 3) {
+          genericTitleDropSamples.push(normalizedTitle || '(제목 없음)');
         }
         continue;
       }
@@ -901,7 +1059,8 @@ async function crawlSource(source, options = {}) {
         continue;
       }
 
-      if (defaults.active_post_only && !isActiveNotice(parsedDetail.closingAt)) {
+      const applyActiveOnly = defaults.active_post_only && !isStartupBackfill(options);
+      if (applyActiveOnly && !isActiveNotice(parsedDetail.closingAt)) {
         droppedByInactive += 1;
         continue;
       }
@@ -922,18 +1081,18 @@ async function crawlSource(source, options = {}) {
     }
   }
 
-  if (genericTitleSamples.length > 0) {
-    console.log(
-      `[LOCAL GOV] ${source.district_name} generic title 샘플 — ${genericTitleSamples
-        .map((title, idx) => `#${idx + 1} ${title}`)
-        .join(' | ')}`
-    );
-  }
-
   if (keywordDropSamples.length > 0) {
     console.log(
       `[LOCAL GOV] ${source.district_name} keyword 탈락 샘플 — ${keywordDropSamples
         .map((s, idx) => `#${idx + 1}[${s.reason}] ${s.title}`)
+        .join(' | ')}`
+    );
+  }
+
+  if (genericTitleDropSamples.length > 0) {
+    console.log(
+      `[LOCAL GOV] ${source.district_name} generic title 샘플 — ${genericTitleDropSamples
+        .map((title, idx) => `#${idx + 1} ${title}`)
         .join(' | ')}`
     );
   }

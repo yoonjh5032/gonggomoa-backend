@@ -150,6 +150,7 @@ router.get('/stats', async (req, res) => {
       g2b: map.g2b_api || 0,
       seoul: map.seoul_board || 0,
       contract: map.seoul_contract || 0,
+      local_gov: map.local_gov || 0,
       total
     });
   } catch (err) {
