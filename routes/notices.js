@@ -67,16 +67,13 @@ function buildExcludedSuidamReadCondition() {
       AND (
         bid_method = '전자시담'
         OR contract_method = '수의시담'
-        OR JSON_UNQUOTE(JSON_EXTRACT(raw_data, '$.bidMethdNm')) = '전자시담'
-        OR JSON_UNQUOTE(JSON_EXTRACT(raw_data, '$.cntrctMthdNm')) = '수의시담'
-        OR JSON_UNQUOTE(JSON_EXTRACT(raw_data, '$.sucsfbidMthdCdNm')) = '수의시담'
-        OR JSON_SEARCH(raw_data, 'one', '전자시담', NULL, '$.bidMethdNm') IS NOT NULL
-        OR JSON_SEARCH(raw_data, 'one', '수의시담', NULL, '$.cntrctMthdNm') IS NOT NULL
-        OR JSON_SEARCH(raw_data, 'one', '수의시담', NULL, '$.sucsfbidMthdCdNm') IS NOT NULL
+        OR CAST(raw_data AS CHAR) LIKE '%sucsfbidMthdCdNm%수의시담%'
+
       )
     )
   `);
 }
+
 
 /* ════════════════════════════════════════════════
    GET /api/notices
