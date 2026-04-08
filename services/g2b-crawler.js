@@ -8,7 +8,7 @@ const ENDPOINTS = [
   { path: '/getBidPblancListInfoThng', type: '물품' },
   { path: '/getBidPblancListInfoServc', type: '용역' },
   { path: '/getBidPblancListInfoCnstwk', type: '공사' },
-  { path: '/getBidPblancListInfoFrgcpt', type: '외자' },
+  { path: '/getBidPblancListInfoFrgcpt', type: '외자' }
 ];
 
 function formatBudget(won) {
@@ -28,7 +28,6 @@ function buildG2bUrl(bidNtceNo, bidNtceOrd) {
   if (!bidNtceNo) return '';
   return `https://www.g2b.go.kr/link/PNPE027_01/single/?bidPbancNo=${encodeURIComponent(bidNtceNo)}&bidPbancOrd=${encodeURIComponent(bidNtceOrd || '000')}`;
 }
-
 
 function parseDate(str) {
   if (!str) return null;
@@ -62,6 +61,52 @@ function normalizeItems(body) {
   if (Array.isArray(rawItems.item)) return rawItems.item;
   if (rawItems.item) return [rawItems.item];
   return [rawItems];
+}
+
+function normalizeText(v) {
+  return String(v || '').trim();
+}
+
+function normalizeG2bBidMethod(item) {
+  return {
+    bidMethod: normalizeText(item.bidMethdNm),
+    contractMethod: normalizeText(item.cntrctMthdNm),
+    detailMethod: normalizeText(item.sucsfbidMthdCdNm)
+  };
+}
+
+function evaluateHiddenNotice(item) {
+  const { bidMethod, contractMethod, detailMethod } = normalizeG2bBidMethod(item);
+
+  if (bidMethod === '전자시담') {
+    return {
+      is_hidden: true,
+      hidden_reason: 'g2b_bid_method_전자시담',
+      normalized_bid_method: bidMethod
+    };
+  }
+
+  if (contractMethod === '수의시담') {
+    return {
+      is_hidden: true,
+      hidden_reason: 'g2b_contract_method_수의시담',
+      normalized_bid_method: contractMethod
+    };
+  }
+
+  if (detailMethod === '수의시담') {
+    return {
+      is_hidden: true,
+      hidden_reason: 'g2b_detail_method_수의시담',
+      normalized_bid_method: detailMethod
+    };
+  }
+
+  return {
+    is_hidden: false,
+    hidden_reason: '',
+    normalized_bid_method: detailMethod || contractMethod || bidMethod || ''
+  };
 }
 
 async function fetchEndpointPage(endpoint, inqryBgnDt, inqryEndDt, pageNo = 1) {
@@ -121,6 +166,7 @@ function mapItem(item, noticeType) {
   const budget = Number(item.asignBdgtAmt || item.presmptPrce || 0);
   const estimated = Number(item.presmptPrce || 0);
   const detailUrl = item.bidNtceUrl || buildG2bUrl(bidNtceNo, bidNtceOrd);
+  const hiddenMeta = evaluateHiddenNotice(item);
 
   return {
     bid_ntce_no: bidNtceNo,
@@ -130,6 +176,9 @@ function mapItem(item, noticeType) {
     notice_type: noticeType,
     bid_method: item.bidMethdNm || '',
     contract_method: item.cntrctMthdNm || '',
+    normalized_bid_method: hiddenMeta.normalized_bid_method,
+    is_hidden: hiddenMeta.is_hidden,
+    hidden_reason: hiddenMeta.hidden_reason,
     issuing_org: item.ntceInsttNm || '',
     demanding_org: item.dminsttNm || '',
     budget,
