@@ -1,6 +1,6 @@
 /* routes/notices.js — 공고 조회 API (MySQL / Sequelize) */
 const router = require('express').Router();
-const { Op, fn, col, literal } = require('sequelize');
+const { Op, fn, col } = require('sequelize');
 const Notice = require('../models/Notice');
 
 const CALENDAR_CACHE_TTL = 1000 * 60 * 2; // 2분 캐시
@@ -38,6 +38,24 @@ function buildActiveNoticeCondition(now = new Date()) {
   };
 }
 
+function buildVisibleNoticeCondition() {
+  return {
+    [Op.or]: [
+      { is_hidden: false },
+      { is_hidden: null }
+    ]
+  };
+}
+
+function buildBaseNoticeWhere() {
+  return {
+    [Op.and]: [
+      buildActiveNoticeCondition(),
+      buildVisibleNoticeCondition()
+    ]
+  };
+}
+
 function normalizeKeywords(raw) {
   if (!raw) return [];
   const list = Array.isArray(raw) ? raw : String(raw).split(',');
@@ -49,29 +67,6 @@ function normalizeKeywords(raw) {
       .map(v => v.slice(0, 30))
   )].slice(0, 10);
 }
-
-/**
- * 조회 시 숨길 G2B 공고 조건
- *
- * 제외 대상:
- * - 입찰방식 = 전자시담
- * - 낙찰방법 = 수의시담
- * - 낙찰방법세부기준 = 수의시담
- *
- * 저장 컬럼 + raw_data(JSON) 모두 확인
- */
-function buildExcludedSuidamReadCondition() {
-  return literal(`
-    NOT (
-      source_system = 'g2b_api'
-      AND (
-        bid_method = '전자시담'
-        OR contract_method = '수의시담'
-      )
-    )
-  `);
-}
-
 
 /* ════════════════════════════════════════════════
    GET /api/notices
@@ -91,13 +86,7 @@ router.get('/', async (req, res) => {
     } = req.query;
 
     const keywordList = normalizeKeywords(rawKeywords);
-
-    const where = {
-      [Op.and]: [
-        buildActiveNoticeCondition(),
-        buildExcludedSuidamReadCondition()
-      ]
-    };
+    const where = buildBaseNoticeWhere();
 
     if (q && q.trim()) {
       const text = q.trim();
@@ -175,7 +164,7 @@ router.get('/stats', async (req, res) => {
       where: {
         [Op.and]: [
           buildActiveNoticeCondition(),
-          buildExcludedSuidamReadCondition()
+          buildVisibleNoticeCondition()
         ]
       },
       group: ['source_system'],
@@ -243,7 +232,7 @@ router.get('/calendar/:year/:month', async (req, res) => {
       where: {
         [Op.and]: [
           { closing_at: { [Op.between]: [effectiveFrom, to] } },
-          buildExcludedSuidamReadCondition()
+          buildVisibleNoticeCondition()
         ]
       },
       order: [['closing_at', 'ASC']],
@@ -286,7 +275,7 @@ router.get('/:id', async (req, res) => {
       where: {
         id: req.params.id,
         [Op.and]: [
-          buildExcludedSuidamReadCondition()
+          buildVisibleNoticeCondition()
         ]
       },
       raw: true
