@@ -204,15 +204,49 @@ function markMonitorSkipped(key, reason, jobName = '') {
   if (!entry) return;
 
   const nowIso = new Date().toISOString();
-  entry.running = false;
+  entry.running = isCollectorRunning(key);
   entry.lastJob = jobName || entry.lastJob || '';
   entry.lastSkippedAt = nowIso;
   entry.lastSkippedReason = reason || '';
   entry.updatedAt = nowIso;
 }
 
+function isCollectorRunning(key) {
+  if (key === 'g2b_api') {
+    return Boolean(runningMinuteJob || runningG2bSyncJob);
+  }
+
+  if (key === 'seoul_contract') {
+    return Boolean(runningSeoulContractJob);
+  }
+
+  if (key === 'local_gov') {
+    return Boolean(runningLocalGovJob);
+  }
+
+  if (key === 'purge_expired') {
+    return Boolean(runningPurgeJob);
+  }
+
+  return false;
+}
+
+function syncCollectorRunningState() {
+  Object.keys(collectorMonitor).forEach((key) => {
+    collectorMonitor[key].running = isCollectorRunning(key);
+  });
+}
+
+function getCollectorStatusItem(key) {
+  syncCollectorEnabledState();
+  syncCollectorRunningState();
+  const entry = collectorMonitor[key];
+  return entry ? cloneMonitorEntry(entry) : null;
+}
+
 function getCollectorStatuses() {
   syncCollectorEnabledState();
+  syncCollectorRunningState();
   return {
     generatedAt: new Date().toISOString(),
     items: Object.values(collectorMonitor).map(cloneMonitorEntry),
@@ -603,6 +637,75 @@ async function runLocalGovRegularCollection(reason = 'scheduled', options = {}) 
   }
 }
 
+function runCollectorNow(key, payload = {}) {
+  const collectorKey = String(key || '').trim();
+  const allowedKeys = ['g2b_api', 'seoul_contract', 'local_gov'];
+
+  if (!allowedKeys.includes(collectorKey)) {
+    return {
+      ok: false,
+      started: false,
+      code: 'invalid_collector',
+      message: '지원하지 않는 수집기입니다.',
+      item: null,
+    };
+  }
+
+  const label = collectorMonitor[collectorKey]?.label || collectorKey;
+
+  if (!isSourceEnabled(collectorKey)) {
+    markMonitorSkipped(collectorKey, 'manual_source_disabled', 'manual');
+    return {
+      ok: false,
+      started: false,
+      code: 'disabled',
+      message: `${label} 수집기는 현재 비활성화 상태입니다.`,
+      item: getCollectorStatusItem(collectorKey),
+    };
+  }
+
+  if (isCollectorRunning(collectorKey)) {
+    markMonitorSkipped(collectorKey, 'manual_already_running', 'manual');
+    return {
+      ok: false,
+      started: false,
+      code: 'already_running',
+      message: `${label} 수집기가 이미 실행 중입니다.`,
+      item: getCollectorStatusItem(collectorKey),
+    };
+  }
+
+  const options = payload && typeof payload === 'object' ? payload : {};
+  let taskPromise;
+
+  if (collectorKey === 'g2b_api') {
+    const hours = Number(options.hours) > 0 ? Number(options.hours) : G2B_BACKFILL_HOURS;
+    taskPromise = runG2bBackfill(hours);
+  } else if (collectorKey === 'seoul_contract') {
+    taskPromise = runSeoulContractTwiceDaily();
+  } else if (collectorKey === 'local_gov') {
+    taskPromise = runLocalGovRegularCollection('manual', {
+      ...(Number(options.maxPages) > 0 ? { maxPages: Number(options.maxPages) } : {}),
+      ...(Number(options.lookbackDays) > 0
+        ? { lookbackDays: Number(options.lookbackDays) }
+        : {}),
+      ...(Array.isArray(options.keys) && options.keys.length ? { keys: options.keys } : {}),
+    });
+  }
+
+  Promise.resolve(taskPromise).catch((err) => {
+    console.error(`[스케줄러] 수동 실행 예외 (${collectorKey})`, err.message);
+  });
+
+  return {
+    ok: true,
+    started: true,
+    code: 'started',
+    message: `${label} 수동 실행을 시작했습니다.`,
+    item: getCollectorStatusItem(collectorKey),
+  };
+}
+
 async function initialLoad() {
   try {
     const count = await Notice.count();
@@ -679,6 +782,8 @@ module.exports = {
   start,
   getEnabledCollectorSources,
   getCollectorStatuses,
+  getCollectorStatusItem,
+  runCollectorNow,
   purgeExpiredNotices,
   runG2bBackfill,
   runG2bStartupBackfill,
