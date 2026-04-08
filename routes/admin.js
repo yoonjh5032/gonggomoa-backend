@@ -85,107 +85,6 @@ function toCollectorLogItem(row) {
   };
 }
 
-function parseDateBoundary(value, endOfDay = false) {
-  const raw = String(value || '').trim();
-  if (!raw) return null;
-
-  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
-
-  if (isDateOnly) {
-    return endOfDay
-      ? new Date(`${raw}T23:59:59.999Z`)
-      : new Date(`${raw}T00:00:00.000Z`);
-  }
-
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed;
-}
-
-function buildCollectorLogFilters(query = {}) {
-  const page = Math.max(parseInt(query.page, 10) || 1, 1);
-  const limit = Math.min(Math.max(parseInt(query.limit, 10) || 20, 1), 100);
-
-  const key = String(query.key || 'all').trim();
-  const status = String(query.status || 'all').trim();
-  const trigger_type = String(query.trigger_type || 'all').trim();
-  const from = String(query.from || '').trim();
-  const to = String(query.to || '').trim();
-  const q = String(query.q || '').trim();
-
-  return {
-    page,
-    limit,
-    offset: (page - 1) * limit,
-    key,
-    status,
-    trigger_type,
-    from,
-    to,
-    q
-  };
-}
-
-function buildCollectorLogWhere(filters) {
-  const where = {};
-
-  if (filters.key && filters.key !== 'all') {
-    where.collector_key = filters.key;
-  }
-
-  if (filters.status && filters.status !== 'all') {
-    if (!['started', 'success', 'error', 'skipped'].includes(filters.status)) {
-      throw new Error('유효하지 않은 상태 필터입니다.');
-    }
-    where.status = filters.status;
-  }
-
-  if (filters.trigger_type && filters.trigger_type !== 'all') {
-    if (!['manual', 'scheduled', 'startup', 'maintenance'].includes(filters.trigger_type)) {
-      throw new Error('유효하지 않은 실행 유형 필터입니다.');
-    }
-    where.trigger_type = filters.trigger_type;
-  }
-
-  const startedAt = {};
-  const fromDate = parseDateBoundary(filters.from, false);
-  const toDate = parseDateBoundary(filters.to, true);
-
-  if (filters.from && !fromDate) {
-    throw new Error('유효하지 않은 시작일입니다.');
-  }
-
-  if (filters.to && !toDate) {
-    throw new Error('유효하지 않은 종료일입니다.');
-  }
-
-  if (fromDate) {
-    startedAt[Op.gte] = fromDate;
-  }
-
-  if (toDate) {
-    startedAt[Op.lte] = toDate;
-  }
-
-  if (Object.keys(startedAt).length) {
-    where.started_at = startedAt;
-  }
-
-  if (filters.q) {
-    where[Op.or] = [
-      { collector_key: { [Op.like]: `%${filters.q}%` } },
-      { collector_label: { [Op.like]: `%${filters.q}%` } },
-      { job_name: { [Op.like]: `%${filters.q}%` } },
-      { actor_name: { [Op.like]: `%${filters.q}%` } },
-      { actor_email: { [Op.like]: `%${filters.q}%` } },
-      { error_message: { [Op.like]: `%${filters.q}%` } },
-      { skip_reason: { [Op.like]: `%${filters.q}%` } }
-    ];
-  }
-
-  return where;
-}
-
 /* ─────────────────────────────
    GET /api/admin/dashboard
 ───────────────────────────── */
@@ -291,73 +190,45 @@ router.get('/dashboard', async (req, res) => {
 ───────────────────────────── */
 router.get('/collectors/logs', async (req, res) => {
   try {
-    const filters = buildCollectorLogFilters(req.query);
-    const where = buildCollectorLogWhere(filters);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const offset = (page - 1) * limit;
+    const key = String(req.query.key || 'all').trim();
+    const status = String(req.query.status || 'all').trim();
 
-    const [result, startedCount, successCount, errorCount, skippedCount] = await Promise.all([
-      CollectorRunLog.findAndCountAll({
-        where,
-        order: [['createdAt', 'DESC']],
-        offset: filters.offset,
-        limit: filters.limit
-      }),
-      CollectorRunLog.count({ where: { ...where, status: 'started' } }),
-      CollectorRunLog.count({ where: { ...where, status: 'success' } }),
-      CollectorRunLog.count({ where: { ...where, status: 'error' } }),
-      CollectorRunLog.count({ where: { ...where, status: 'skipped' } })
-    ]);
+    const where = {};
+
+    if (key && key !== 'all') {
+      where.collector_key = key;
+    }
+
+    if (status && status !== 'all') {
+      if (!['started', 'success', 'error', 'skipped'].includes(status)) {
+        return res.status(400).json({ error: '유효하지 않은 상태 필터입니다.' });
+      }
+      where.status = status;
+    }
+
+    const result = await CollectorRunLog.findAndCountAll({
+      where,
+      order: [['createdAt', 'DESC']],
+      offset,
+      limit
+    });
 
     res.json({
       data: result.rows.map(toCollectorLogItem),
       pagination: {
         total: result.count,
-        page: filters.page,
-        limit: filters.limit,
-        pages: Math.max(Math.ceil(result.count / filters.limit), 1)
+        page,
+        limit,
+        pages: Math.max(Math.ceil(result.count / limit), 1)
       },
-      filters: {
-        key: filters.key,
-        status: filters.status,
-        trigger_type: filters.trigger_type,
-        from: filters.from,
-        to: filters.to,
-        q: filters.q
-      },
-      summary: {
-        total: result.count,
-        started: startedCount,
-        success: successCount,
-        error: errorCount,
-        skipped: skippedCount
-      }
+      filters: { key, status }
     });
   } catch (err) {
-    if (err && /유효하지 않은/.test(err.message || '')) {
-      return res.status(400).json({ error: err.message });
-    }
-
     console.error('[ADMIN_COLLECTOR_LOGS]', err);
     res.status(500).json({ error: '수집기 실행 이력을 불러오는 중 오류가 발생했습니다.' });
-  }
-});
-
-/* ─────────────────────────────
-   GET /api/admin/collectors/logs/:id
-───────────────────────────── */
-router.get('/collectors/logs/:id', async (req, res) => {
-  try {
-    const row = await CollectorRunLog.findByPk(req.params.id);
-
-    if (!row) {
-      return res.status(404).json({ error: '실행 이력을 찾을 수 없습니다.' });
-    }
-
-    res.json({
-      item: toCollectorLogItem(row)
-    });
-  } catch (err) {
-    console.error('[ADMIN_COLLECTOR_LOG_DETAIL]', err);
-    res.status(500).json({ error: '수집기 실행 이력 상세를 불러오는 중 오류가 발생했습니다.' });
   }
 });
 
