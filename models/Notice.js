@@ -1,6 +1,6 @@
 /* models/Notice.js — 공고 모델 (Sequelize + MySQL) */
 const { DataTypes } = require('sequelize');
-const { sequelize }  = require('../config/db');
+const { sequelize } = require('../config/db');
 
 const Notice = sequelize.define('Notice', {
   id: {
@@ -37,6 +37,20 @@ const Notice = sequelize.define('Notice', {
     defaultValue: ''
   },
   contract_method: {
+    type: DataTypes.STRING(100),
+    defaultValue: ''
+  },
+  normalized_bid_method: {
+    type: DataTypes.STRING(100),
+    defaultValue: ''
+  },
+
+  /* ── 노출 정책 ── */
+  is_hidden: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  },
+  hidden_reason: {
     type: DataTypes.STRING(100),
     defaultValue: ''
   },
@@ -93,17 +107,17 @@ const Notice = sequelize.define('Notice', {
 }, {
   tableName: 'notices',
   indexes: [
-    // 중복 방지: 공고번호+차수+출처
     {
       unique: true,
       fields: ['bid_ntce_no', 'bid_ntce_ord', 'source_system'],
       name: 'uq_notice'
     },
-    // 검색/정렬용 인덱스
     { fields: ['closing_at'] },
     { fields: ['published_at'] },
     { fields: ['source_system'] },
     { fields: ['notice_type'] },
+    { fields: ['is_hidden'] },
+    { fields: ['source_system', 'is_hidden'] },
     { fields: ['title'], type: 'FULLTEXT' }
   ]
 });
