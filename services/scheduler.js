@@ -5,6 +5,7 @@ const g2bCrawler = require('./g2b-crawler');
 const seoulContractCrawler = require('./seoul-contract-crawler');
 const localGovCrawler = require('./local-gov-crawler');
 const Notice = require('../models/Notice');
+const CollectorRunLog = require('../models/collector-run-log');
 
 const ENABLED_COLLECTOR_SOURCES = (
   process.env.ENABLED_COLLECTOR_SOURCES || 'g2b_api,seoul_contract,local_gov'
@@ -44,6 +45,11 @@ const LOCAL_GOV_STARTUP_LOOKBACK_DAYS = Number(
 const LOCAL_GOV_STARTUP_ENABLED =
   process.env.LOCAL_GOV_STARTUP_ENABLED !== 'false';
 
+const COLLECTOR_LOG_LIMIT = Math.min(
+  Math.max(Number(process.env.COLLECTOR_LOG_LIMIT || 200), 20),
+  1000
+);
+
 let runningMinuteJob = false;
 let runningSeoulContractJob = false;
 let runningPurgeJob = false;
@@ -70,6 +76,9 @@ function createMonitorEntry(key, label, options = {}) {
     lastResult: null,
     updatedAt: null,
     _startedAtMs: null,
+    _activeLogId: null,
+    _activeLogPromise: null,
+    _activeContext: null,
   };
 }
 
@@ -143,6 +152,198 @@ function normalizeMonitorResult(result) {
   return out;
 }
 
+function safeJson(value) {
+  if (value == null) return null;
+
+  if (value instanceof Error) {
+    return { message: value.message, stack: value.stack };
+  }
+
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch (err) {
+    return { value: String(value) };
+  }
+}
+
+function normalizeText(value) {
+  return String(value || '').trim();
+}
+
+function inferTriggerType(jobName, context = {}) {
+  if (context.triggerType) return String(context.triggerType);
+  if (jobName === 'manual') return 'manual';
+  if (String(jobName || '').includes('startup')) return 'startup';
+  if (jobName === 'purge') return 'maintenance';
+  return 'scheduled';
+}
+
+function normalizeActor(actor) {
+  if (!actor || typeof actor !== 'object') return null;
+
+  return {
+    userId: Number(actor.userId) > 0 ? Number(actor.userId) : null,
+    email: normalizeText(actor.email).slice(0, 255),
+    name: normalizeText(actor.name).slice(0, 100),
+    role: normalizeText(actor.role).slice(0, 20),
+  };
+}
+
+function buildLogContext(jobName, context = {}) {
+  const actor = normalizeActor(context.actor);
+  return {
+    triggerType: inferTriggerType(jobName, context),
+    actor,
+    requestPayload: safeJson(context.requestPayload),
+    metadata: safeJson(context.metadata),
+  };
+}
+
+function buildLogBase(entry, jobName, context = {}) {
+  const normalized = buildLogContext(jobName, context);
+  const actor = normalized.actor || {};
+
+  return {
+    collector_key: entry.key,
+    collector_label: entry.label,
+    kind: entry.kind,
+    job_name: jobName || '',
+    trigger_type: normalized.triggerType,
+    actor_user_id: actor.userId || null,
+    actor_email: actor.email || '',
+    actor_name: actor.name || '',
+    actor_role: actor.role || '',
+    request_payload: normalized.requestPayload,
+    metadata: normalized.metadata,
+  };
+}
+
+function trimRunLogs() {
+  Promise.resolve()
+    .then(async () => {
+      const total = await CollectorRunLog.count();
+      if (total <= COLLECTOR_LOG_LIMIT) return;
+
+      const overflow = total - COLLECTOR_LOG_LIMIT;
+      const staleRows = await CollectorRunLog.findAll({
+        attributes: ['id'],
+        order: [['createdAt', 'ASC']],
+        limit: overflow,
+        raw: true,
+      });
+
+      const staleIds = staleRows.map((row) => row.id).filter(Boolean);
+      if (!staleIds.length) return;
+
+      await CollectorRunLog.destroy({ where: { id: { [Op.in]: staleIds } } });
+    })
+    .catch((err) => {
+      console.error('[스케줄러] 수집기 로그 정리 실패', err.message);
+    });
+}
+
+function persistStartedLog(key, jobName, context = {}) {
+  const entry = collectorMonitor[key];
+  if (!entry) return;
+
+  const startedAt = entry.lastStartedAt ? new Date(entry.lastStartedAt) : new Date();
+  const payload = {
+    ...buildLogBase(entry, jobName, context),
+    status: 'started',
+    started_at: startedAt,
+    finished_at: null,
+    duration_ms: null,
+    result: null,
+    error_message: '',
+    skip_reason: '',
+  };
+
+  const promise = CollectorRunLog.create(payload)
+    .then((row) => {
+      entry._activeLogId = row.id;
+      return row.id;
+    })
+    .catch((err) => {
+      console.error(`[스케줄러] 실행 이력 시작 로그 저장 실패 (${key})`, err.message);
+      return null;
+    });
+
+  entry._activeLogPromise = promise;
+}
+
+function persistTerminalLog(key, status, jobName, payload = {}, context = {}) {
+  const entry = collectorMonitor[key];
+  if (!entry) return;
+
+  const finishedAt = payload.finishedAt instanceof Date ? payload.finishedAt : new Date();
+  const startedAt = payload.startedAt instanceof Date
+    ? payload.startedAt
+    : (entry.lastStartedAt ? new Date(entry.lastStartedAt) : finishedAt);
+
+  const rowPayload = {
+    ...buildLogBase(entry, jobName, context),
+    status,
+    started_at: startedAt,
+    finished_at: finishedAt,
+    duration_ms: Number(payload.durationMs) >= 0 ? Number(payload.durationMs) : null,
+    result: safeJson(payload.result),
+    error_message: normalizeText(payload.errorMessage).slice(0, 500),
+    skip_reason: normalizeText(payload.skipReason).slice(0, 120),
+  };
+
+  const activeRef = entry._activeLogPromise || Promise.resolve(entry._activeLogId || null);
+
+  entry._activeLogPromise = Promise.resolve(activeRef)
+    .then(async (logId) => {
+      if (logId) {
+        const [updatedCount] = await CollectorRunLog.update(rowPayload, {
+          where: { id: logId },
+        });
+        if (updatedCount > 0) {
+          return logId;
+        }
+      }
+
+      const row = await CollectorRunLog.create(rowPayload);
+      return row.id;
+    })
+    .catch((err) => {
+      console.error(`[스케줄러] 실행 이력 종료 로그 저장 실패 (${key})`, err.message);
+      return null;
+    })
+    .finally(() => {
+      entry._activeLogId = null;
+      entry._activeLogPromise = null;
+      entry._activeContext = null;
+      trimRunLogs();
+    });
+}
+
+function persistSkippedLog(key, reason, jobName, context = {}) {
+  const entry = collectorMonitor[key];
+  if (!entry) return;
+
+  const now = new Date();
+  const rowPayload = {
+    ...buildLogBase(entry, jobName, context),
+    status: 'skipped',
+    started_at: now,
+    finished_at: now,
+    duration_ms: null,
+    result: null,
+    error_message: '',
+    skip_reason: normalizeText(reason).slice(0, 120),
+  };
+
+  CollectorRunLog.create(rowPayload)
+    .then(() => {
+      trimRunLogs();
+    })
+    .catch((err) => {
+      console.error(`[스케줄러] 실행 이력 skip 로그 저장 실패 (${key})`, err.message);
+    });
+}
+
 function syncCollectorEnabledState() {
   ['g2b_api', 'seoul_contract', 'local_gov'].forEach((key) => {
     if (collectorMonitor[key]) {
@@ -151,7 +352,7 @@ function syncCollectorEnabledState() {
   });
 }
 
-function markMonitorStart(key, jobName) {
+function markMonitorStart(key, jobName, context = {}) {
   syncCollectorEnabledState();
   const entry = collectorMonitor[key];
   if (!entry) return;
@@ -161,11 +362,16 @@ function markMonitorStart(key, jobName) {
   entry.lastJob = jobName || entry.lastJob || '';
   entry.lastStartedAt = nowIso;
   entry.lastErrorMessage = '';
+  entry.lastSkippedAt = null;
+  entry.lastSkippedReason = '';
   entry.updatedAt = nowIso;
   entry._startedAtMs = Date.now();
+  entry._activeContext = buildLogContext(jobName, context);
+
+  persistStartedLog(key, jobName, entry._activeContext);
 }
 
-function markMonitorSuccess(key, jobName, result = null) {
+function markMonitorSuccess(key, jobName, result = null, context = null) {
   syncCollectorEnabledState();
   const entry = collectorMonitor[key];
   if (!entry) return;
@@ -179,9 +385,21 @@ function markMonitorSuccess(key, jobName, result = null) {
   entry.lastResult = normalizeMonitorResult(result);
   entry.updatedAt = nowIso;
   entry._startedAtMs = null;
+
+  persistTerminalLog(
+    key,
+    'success',
+    jobName,
+    {
+      finishedAt: new Date(nowIso),
+      durationMs: entry.lastDurationMs,
+      result: entry.lastResult,
+    },
+    context || entry._activeContext || {}
+  );
 }
 
-function markMonitorError(key, jobName, err, result = null) {
+function markMonitorError(key, jobName, err, result = null, context = null) {
   syncCollectorEnabledState();
   const entry = collectorMonitor[key];
   if (!entry) return;
@@ -196,9 +414,22 @@ function markMonitorError(key, jobName, err, result = null) {
   entry.lastResult = normalizeMonitorResult(result);
   entry.updatedAt = nowIso;
   entry._startedAtMs = null;
+
+  persistTerminalLog(
+    key,
+    'error',
+    jobName,
+    {
+      finishedAt: new Date(nowIso),
+      durationMs: entry.lastDurationMs,
+      result: entry.lastResult,
+      errorMessage: entry.lastErrorMessage,
+    },
+    context || entry._activeContext || {}
+  );
 }
 
-function markMonitorSkipped(key, reason, jobName = '') {
+function markMonitorSkipped(key, reason, jobName = '', context = {}) {
   syncCollectorEnabledState();
   const entry = collectorMonitor[key];
   if (!entry) return;
@@ -209,6 +440,8 @@ function markMonitorSkipped(key, reason, jobName = '') {
   entry.lastSkippedAt = nowIso;
   entry.lastSkippedReason = reason || '';
   entry.updatedAt = nowIso;
+
+  persistSkippedLog(key, reason, jobName, context);
 }
 
 function isCollectorRunning(key) {
@@ -251,6 +484,27 @@ function getCollectorStatuses() {
     generatedAt: new Date().toISOString(),
     items: Object.values(collectorMonitor).map(cloneMonitorEntry),
   };
+}
+
+async function getCollectorRunLogs(options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit) || 20, 1), 100);
+  const where = {};
+
+  if (options.key && options.key !== 'all') {
+    where.collector_key = String(options.key).trim();
+  }
+
+  if (options.status && options.status !== 'all') {
+    where.status = String(options.status).trim();
+  }
+
+  const rows = await CollectorRunLog.findAll({
+    where,
+    order: [['createdAt', 'DESC']],
+    limit,
+  });
+
+  return rows.map((row) => row.toJSON());
 }
 
 function parseCsvList(raw) {
@@ -329,13 +583,20 @@ function finishG2bSync(jobName) {
   }
 }
 
-async function purgeExpiredNotices() {
+async function purgeExpiredNotices(context = {}) {
+  const logContext = {
+    triggerType: context.triggerType || 'maintenance',
+    actor: context.actor,
+    requestPayload: context.requestPayload,
+    metadata: { ...(context.metadata || {}), task: 'purge_expired' },
+  };
+
   if (runningPurgeJob) {
-    markMonitorSkipped('purge_expired', 'already_running', 'purge');
+    markMonitorSkipped('purge_expired', 'already_running', 'purge', logContext);
     return;
   }
   runningPurgeJob = true;
-  markMonitorStart('purge_expired', 'purge');
+  markMonitorStart('purge_expired', 'purge', logContext);
 
   try {
     const deleted = await Notice.destroy({
@@ -347,11 +608,11 @@ async function purgeExpiredNotices() {
     });
 
     console.log(`[스케줄러] 만료 공고 삭제 완료 — ${deleted}건`);
-    markMonitorSuccess('purge_expired', 'purge', { deleted });
+    markMonitorSuccess('purge_expired', 'purge', { deleted }, logContext);
     return { deleted };
   } catch (err) {
     console.error('[스케줄러] 만료 공고 삭제 실패', err.message);
-    markMonitorError('purge_expired', 'purge', err);
+    markMonitorError('purge_expired', 'purge', err, null, logContext);
     throw err;
   } finally {
     runningPurgeJob = false;
@@ -377,15 +638,20 @@ async function runG2bRangeSync(label, fromDate, toDate = new Date()) {
 }
 
 async function runMinuteCollectors() {
+  const logContext = {
+    triggerType: 'scheduled',
+    metadata: { job: 'minute_window' },
+  };
+
   if (runningMinuteJob) {
     console.log('[스케줄러] 분단위 수집 이미 실행 중, 건너뜀');
-    markMonitorSkipped('g2b_api', 'minute_already_running', 'minute');
+    markMonitorSkipped('g2b_api', 'minute_already_running', 'minute', logContext);
     return;
   }
 
   if (!isSourceEnabled('g2b_api')) {
     console.log('[스케줄러] g2b_api 비활성화 상태');
-    markMonitorSkipped('g2b_api', 'source_disabled', 'minute');
+    markMonitorSkipped('g2b_api', 'source_disabled', 'minute', logContext);
     return;
   }
 
@@ -394,17 +660,17 @@ async function runMinuteCollectors() {
 
   if (hour < 8 || hour >= 19) {
     console.log(`[스케줄러] KST ${hour}시 — 수집 시간 범위 밖, 건너뜀`);
-    markMonitorSkipped('g2b_api', `out_of_window_${hour}`, 'minute');
+    markMonitorSkipped('g2b_api', `out_of_window_${hour}`, 'minute', logContext);
     return;
   }
 
   if (!tryStartG2bSync('minute')) {
-    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'minute');
+    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'minute', logContext);
     return;
   }
 
   runningMinuteJob = true;
-  markMonitorStart('g2b_api', 'minute');
+  markMonitorStart('g2b_api', 'minute', logContext);
 
   try {
     console.log(
@@ -414,87 +680,111 @@ async function runMinuteCollectors() {
       )}시`
     );
 
-    await purgeExpiredNotices();
+    await purgeExpiredNotices({
+      triggerType: 'maintenance',
+      metadata: { parentCollector: 'g2b_api', parentJob: 'minute' },
+    });
     const result = await g2bCrawler.crawl({ minuteMode: true });
-    markMonitorSuccess('g2b_api', 'minute', result);
+    markMonitorSuccess('g2b_api', 'minute', result, logContext);
   } catch (err) {
     console.error('[스케줄러] 분단위 수집 실패', err.message);
-    markMonitorError('g2b_api', 'minute', err);
+    markMonitorError('g2b_api', 'minute', err, null, logContext);
   } finally {
     runningMinuteJob = false;
     finishG2bSync('minute');
   }
 }
 
-async function runG2bBackfill(hours = G2B_BACKFILL_HOURS) {
+async function runG2bBackfill(hours = G2B_BACKFILL_HOURS, context = {}) {
+  const logContext = {
+    triggerType: context.triggerType || 'scheduled',
+    actor: context.actor,
+    requestPayload: { hours },
+    metadata: { ...(context.metadata || {}), hours },
+  };
+
   if (!isSourceEnabled('g2b_api')) {
     console.log('[스케줄러] g2b_api 비활성화 상태');
-    markMonitorSkipped('g2b_api', 'source_disabled', 'backfill');
+    markMonitorSkipped('g2b_api', 'source_disabled', 'backfill', logContext);
     return;
   }
 
   if (!tryStartG2bSync('backfill')) {
-    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'backfill');
+    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'backfill', logContext);
     return;
   }
 
-  markMonitorStart('g2b_api', 'backfill');
+  markMonitorStart('g2b_api', 'backfill', logContext);
 
   try {
     const toDate = new Date();
     const fromDate = new Date(toDate.getTime() - hours * 60 * 60 * 1000);
 
     const result = await runG2bRangeSync(`G2B 보정 수집(${hours}h)`, fromDate, toDate);
-    markMonitorSuccess('g2b_api', 'backfill', result);
+    markMonitorSuccess('g2b_api', 'backfill', result, logContext);
+    return result;
   } catch (err) {
     console.error('[스케줄러] G2B 보정 수집 실패', err.message);
-    markMonitorError('g2b_api', 'backfill', err);
+    markMonitorError('g2b_api', 'backfill', err, null, logContext);
+    throw err;
   } finally {
     finishG2bSync('backfill');
   }
 }
 
 async function runG2bStartupBackfill() {
+  const logContext = {
+    triggerType: 'startup',
+    metadata: { job: 'startup_backfill' },
+  };
+
   if (!isSourceEnabled('g2b_api')) {
     console.log('[스케줄러] g2b_api 비활성화 상태');
-    markMonitorSkipped('g2b_api', 'source_disabled', 'startup_backfill');
+    markMonitorSkipped('g2b_api', 'source_disabled', 'startup_backfill', logContext);
     return;
   }
 
   if (!tryStartG2bSync('startup_backfill')) {
-    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'startup_backfill');
+    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'startup_backfill', logContext);
     return;
   }
 
-  markMonitorStart('g2b_api', 'startup_backfill');
+  markMonitorStart('g2b_api', 'startup_backfill', logContext);
 
   try {
     const fromDate = getKstStartOfDay(1);
     const toDate = new Date();
 
     const result = await runG2bRangeSync('G2B 기동 보정 수집(오늘+어제)', fromDate, toDate);
-    markMonitorSuccess('g2b_api', 'startup_backfill', result);
+    markMonitorSuccess('g2b_api', 'startup_backfill', result, logContext);
+    return result;
   } catch (err) {
     console.error('[스케줄러] G2B 기동 보정 수집 실패', err.message);
-    markMonitorError('g2b_api', 'startup_backfill', err);
+    markMonitorError('g2b_api', 'startup_backfill', err, null, logContext);
+    throw err;
   } finally {
     finishG2bSync('startup_backfill');
   }
 }
 
 async function runG2bOpenNoticeResync() {
+  const logContext = {
+    triggerType: 'scheduled',
+    metadata: { job: 'open_resync' },
+  };
+
   if (!isSourceEnabled('g2b_api')) {
     console.log('[스케줄러] g2b_api 비활성화 상태');
-    markMonitorSkipped('g2b_api', 'source_disabled', 'open_resync');
+    markMonitorSkipped('g2b_api', 'source_disabled', 'open_resync', logContext);
     return;
   }
 
   if (!tryStartG2bSync('open_resync')) {
-    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'open_resync');
+    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'open_resync', logContext);
     return;
   }
 
-  markMonitorStart('g2b_api', 'open_resync');
+  markMonitorStart('g2b_api', 'open_resync', logContext);
 
   try {
     const now = new Date();
@@ -532,36 +822,48 @@ async function runG2bOpenNoticeResync() {
     }
 
     const result = await runG2bRangeSync('G2B 미마감 공고 재동기화', fromDate, now);
-    markMonitorSuccess('g2b_api', 'open_resync', result);
+    markMonitorSuccess('g2b_api', 'open_resync', result, logContext);
+    return result;
   } catch (err) {
     console.error('[스케줄러] G2B 미마감 공고 재동기화 실패', err.message);
-    markMonitorError('g2b_api', 'open_resync', err);
+    markMonitorError('g2b_api', 'open_resync', err, null, logContext);
+    throw err;
   } finally {
     finishG2bSync('open_resync');
   }
 }
 
-async function runSeoulContractTwiceDaily() {
+async function runSeoulContractTwiceDaily(context = {}) {
+  const logContext = {
+    triggerType: context.triggerType || 'scheduled',
+    actor: context.actor,
+    requestPayload: safeJson(context.requestPayload),
+    metadata: { ...(context.metadata || {}), job: 'seoul_contract' },
+  };
+
   if (!isSourceEnabled('seoul_contract')) {
     console.log('[스케줄러] seoul_contract 비활성화 상태');
-    markMonitorSkipped('seoul_contract', 'source_disabled', 'scheduled');
+    markMonitorSkipped('seoul_contract', 'source_disabled', 'scheduled', logContext);
     return;
   }
 
   if (runningSeoulContractJob) {
     console.log('[스케줄러] 서울 계약마당 수집 이미 실행 중, 건너뜀');
-    markMonitorSkipped('seoul_contract', 'already_running', 'scheduled');
+    markMonitorSkipped('seoul_contract', 'already_running', 'scheduled', logContext);
     return;
   }
 
   runningSeoulContractJob = true;
-  markMonitorStart('seoul_contract', 'scheduled');
+  markMonitorStart('seoul_contract', 'scheduled', logContext);
 
   try {
     const today = formatKstDate();
     console.log(`[스케줄러] 서울 계약마당 정기 수집 실행 — ${today}`);
 
-    await purgeExpiredNotices();
+    await purgeExpiredNotices({
+      triggerType: 'maintenance',
+      metadata: { parentCollector: 'seoul_contract', parentJob: 'scheduled' },
+    });
 
     const result = await seoulContractCrawler.crawl({
       fetchDetail: true,
@@ -569,55 +871,77 @@ async function runSeoulContractTwiceDaily() {
       maxPages: Number(process.env.SEOUL_CONTRACT_PAGES_FULL || 8),
       recordCount: Number(process.env.SEOUL_CONTRACT_RECORD_COUNT || 50),
     });
-    markMonitorSuccess('seoul_contract', 'scheduled', result);
+    markMonitorSuccess('seoul_contract', 'scheduled', result, logContext);
+    return result;
   } catch (err) {
     console.error('[스케줄러] 서울 계약마당 정기 수집 실패', err.message);
-    markMonitorError('seoul_contract', 'scheduled', err);
+    markMonitorError('seoul_contract', 'scheduled', err, null, logContext);
+    throw err;
   } finally {
     runningSeoulContractJob = false;
   }
 }
 
-async function runLocalGovRegularCollection(reason = 'scheduled', options = {}) {
+async function runLocalGovRegularCollection(reason = 'scheduled', options = {}, context = {}) {
+  const configuredKeys = parseCsvList(process.env.LOCAL_GOV_KEYS);
+  const targetKeys =
+    Array.isArray(options.keys) && options.keys.length
+      ? options.keys
+      : configuredKeys.length
+      ? configuredKeys
+      : undefined;
+
+  const maxPages =
+    Number(options.maxPages) > 0
+      ? Number(options.maxPages)
+      : LOCAL_GOV_MAX_PAGES;
+
+  const lookbackDays =
+    Number(options.lookbackDays) > 0 ? Number(options.lookbackDays) : 0;
+
+  const logContext = {
+    triggerType: context.triggerType || (reason === 'manual' ? 'manual' : reason === 'startup' ? 'startup' : 'scheduled'),
+    actor: context.actor,
+    requestPayload: {
+      ...(Number(maxPages) > 0 ? { maxPages } : {}),
+      ...(lookbackDays > 0 ? { lookbackDays } : {}),
+      ...(targetKeys?.length ? { keys: targetKeys } : {}),
+    },
+    metadata: {
+      ...(context.metadata || {}),
+      reason,
+      maxPages,
+      ...(lookbackDays > 0 ? { lookbackDays } : {}),
+      ...(targetKeys?.length ? { keys: targetKeys } : {}),
+    },
+  };
+
   if (!isSourceEnabled('local_gov')) {
     console.log('[스케줄러] local_gov 비활성화 상태');
-    markMonitorSkipped('local_gov', 'source_disabled', reason);
+    markMonitorSkipped('local_gov', 'source_disabled', reason, logContext);
     return;
   }
 
   if (runningLocalGovJob) {
     console.log('[스케줄러] local_gov 수집 이미 실행 중, 건너뜀');
-    markMonitorSkipped('local_gov', 'already_running', reason);
+    markMonitorSkipped('local_gov', 'already_running', reason, logContext);
     return;
   }
 
   runningLocalGovJob = true;
-  markMonitorStart('local_gov', reason);
+  markMonitorStart('local_gov', reason, logContext);
 
   try {
-    const configuredKeys = parseCsvList(process.env.LOCAL_GOV_KEYS);
-    const targetKeys =
-      Array.isArray(options.keys) && options.keys.length
-        ? options.keys
-        : configuredKeys.length
-        ? configuredKeys
-        : undefined;
-
-    const maxPages =
-      Number(options.maxPages) > 0
-        ? Number(options.maxPages)
-        : LOCAL_GOV_MAX_PAGES;
-
-    const lookbackDays =
-      Number(options.lookbackDays) > 0 ? Number(options.lookbackDays) : 0;
-
     console.log(
       `[스케줄러] local_gov 정기 수집 실행 (${reason}) — maxPages=${maxPages}${
         lookbackDays > 0 ? ` lookbackDays=${lookbackDays}` : ''
       }${targetKeys?.length ? ` keys=${targetKeys.join(',')}` : ''}`
     );
 
-    await purgeExpiredNotices();
+    await purgeExpiredNotices({
+      triggerType: 'maintenance',
+      metadata: { parentCollector: 'local_gov', parentJob: reason },
+    });
 
     const result = await localGovCrawler.crawl({
       maxPages,
@@ -628,16 +952,18 @@ async function runLocalGovRegularCollection(reason = 'scheduled', options = {}) 
     console.log(
       `[스케줄러] local_gov 정기 수집 완료 (${reason}) — parsed=${result.parsed} kept=${result.kept} new=${result.newCount} updated=${result.updatedCount} errors=${result.errorCount}`
     );
-    markMonitorSuccess('local_gov', reason, result);
+    markMonitorSuccess('local_gov', reason, result, logContext);
+    return result;
   } catch (err) {
     console.error(`[스케줄러] local_gov 정기 수집 실패 (${reason})`, err.message);
-    markMonitorError('local_gov', reason, err);
+    markMonitorError('local_gov', reason, err, null, logContext);
+    throw err;
   } finally {
     runningLocalGovJob = false;
   }
 }
 
-function runCollectorNow(key, payload = {}) {
+function runCollectorNow(key, payload = {}, actor = null) {
   const collectorKey = String(key || '').trim();
   const allowedKeys = ['g2b_api', 'seoul_contract', 'local_gov'];
 
@@ -652,9 +978,15 @@ function runCollectorNow(key, payload = {}) {
   }
 
   const label = collectorMonitor[collectorKey]?.label || collectorKey;
+  const options = payload && typeof payload === 'object' ? payload : {};
+  const actorContext = normalizeActor(actor);
 
   if (!isSourceEnabled(collectorKey)) {
-    markMonitorSkipped(collectorKey, 'manual_source_disabled', 'manual');
+    markMonitorSkipped(collectorKey, 'manual_source_disabled', 'manual', {
+      triggerType: 'manual',
+      actor: actorContext,
+      requestPayload: options,
+    });
     return {
       ok: false,
       started: false,
@@ -665,7 +997,11 @@ function runCollectorNow(key, payload = {}) {
   }
 
   if (isCollectorRunning(collectorKey)) {
-    markMonitorSkipped(collectorKey, 'manual_already_running', 'manual');
+    markMonitorSkipped(collectorKey, 'manual_already_running', 'manual', {
+      triggerType: 'manual',
+      actor: actorContext,
+      requestPayload: options,
+    });
     return {
       ok: false,
       started: false,
@@ -675,22 +1011,40 @@ function runCollectorNow(key, payload = {}) {
     };
   }
 
-  const options = payload && typeof payload === 'object' ? payload : {};
   let taskPromise;
 
   if (collectorKey === 'g2b_api') {
     const hours = Number(options.hours) > 0 ? Number(options.hours) : G2B_BACKFILL_HOURS;
-    taskPromise = runG2bBackfill(hours);
-  } else if (collectorKey === 'seoul_contract') {
-    taskPromise = runSeoulContractTwiceDaily();
-  } else if (collectorKey === 'local_gov') {
-    taskPromise = runLocalGovRegularCollection('manual', {
-      ...(Number(options.maxPages) > 0 ? { maxPages: Number(options.maxPages) } : {}),
-      ...(Number(options.lookbackDays) > 0
-        ? { lookbackDays: Number(options.lookbackDays) }
-        : {}),
-      ...(Array.isArray(options.keys) && options.keys.length ? { keys: options.keys } : {}),
+    taskPromise = runG2bBackfill(hours, {
+      triggerType: 'manual',
+      actor: actorContext,
+      requestPayload: { hours },
+      metadata: { requestedBy: 'admin_api' },
     });
+  } else if (collectorKey === 'seoul_contract') {
+    taskPromise = runSeoulContractTwiceDaily({
+      triggerType: 'manual',
+      actor: actorContext,
+      requestPayload: options,
+      metadata: { requestedBy: 'admin_api' },
+    });
+  } else if (collectorKey === 'local_gov') {
+    taskPromise = runLocalGovRegularCollection(
+      'manual',
+      {
+        ...(Number(options.maxPages) > 0 ? { maxPages: Number(options.maxPages) } : {}),
+        ...(Number(options.lookbackDays) > 0
+          ? { lookbackDays: Number(options.lookbackDays) }
+          : {}),
+        ...(Array.isArray(options.keys) && options.keys.length ? { keys: options.keys } : {}),
+      },
+      {
+        triggerType: 'manual',
+        actor: actorContext,
+        requestPayload: options,
+        metadata: { requestedBy: 'admin_api' },
+      }
+    );
   }
 
   Promise.resolve(taskPromise).catch((err) => {
@@ -711,14 +1065,21 @@ async function initialLoad() {
     const count = await Notice.count();
     console.log(`[스케줄러] 초기 점검 — notices ${count}건`);
 
-    await purgeExpiredNotices();
+    await purgeExpiredNotices({ triggerType: 'startup', metadata: { phase: 'initial_load' } });
     await runG2bStartupBackfill();
 
     if (LOCAL_GOV_STARTUP_ENABLED) {
-      await runLocalGovRegularCollection('startup', {
-        maxPages: LOCAL_GOV_STARTUP_MAX_PAGES,
-        lookbackDays: LOCAL_GOV_STARTUP_LOOKBACK_DAYS,
-      });
+      await runLocalGovRegularCollection(
+        'startup',
+        {
+          maxPages: LOCAL_GOV_STARTUP_MAX_PAGES,
+          lookbackDays: LOCAL_GOV_STARTUP_LOOKBACK_DAYS,
+        },
+        {
+          triggerType: 'startup',
+          metadata: { phase: 'initial_load' },
+        }
+      );
     }
 
     // 초기 기동 시에는 서울 계약마당 자동 실행하지 않음
@@ -747,15 +1108,15 @@ function start() {
     timezone: 'Asia/Seoul',
   });
 
-  cron.schedule('5 0 * * *', purgeExpiredNotices, {
+  cron.schedule('5 0 * * *', () => purgeExpiredNotices({ triggerType: 'maintenance' }), {
     timezone: 'Asia/Seoul',
   });
 
-  cron.schedule('0 9 * * *', runSeoulContractTwiceDaily, {
+  cron.schedule('0 9 * * *', () => runSeoulContractTwiceDaily({ triggerType: 'scheduled' }), {
     timezone: 'Asia/Seoul',
   });
 
-  cron.schedule('0 17 * * *', runSeoulContractTwiceDaily, {
+  cron.schedule('0 17 * * *', () => runSeoulContractTwiceDaily({ triggerType: 'scheduled' }), {
     timezone: 'Asia/Seoul',
   });
 
@@ -783,6 +1144,7 @@ module.exports = {
   getEnabledCollectorSources,
   getCollectorStatuses,
   getCollectorStatusItem,
+  getCollectorRunLogs,
   runCollectorNow,
   purgeExpiredNotices,
   runG2bBackfill,
