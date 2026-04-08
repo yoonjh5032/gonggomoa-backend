@@ -151,6 +151,45 @@ router.get('/dashboard', async (req, res) => {
 });
 
 /* ─────────────────────────────
+   POST /api/admin/collectors/:key/run
+───────────────────────────── */
+router.post('/collectors/:key/run', async (req, res) => {
+  try {
+    const key = String(req.params.key || '').trim();
+    const result = typeof scheduler.runCollectorNow === 'function'
+      ? scheduler.runCollectorNow(key, req.body || {})
+      : {
+          ok: false,
+          started: false,
+          code: 'not_supported',
+          message: '수동 실행 기능이 준비되지 않았습니다.',
+          item: null
+        };
+
+    if (!result.ok && result.code === 'invalid_collector') {
+      return res.status(400).json({ error: result.message, ...result });
+    }
+
+    const collectorStatus = typeof scheduler.getCollectorStatuses === 'function'
+      ? scheduler.getCollectorStatuses()
+      : { generatedAt: new Date().toISOString(), items: [] };
+
+    const item = Array.isArray(collectorStatus.items)
+      ? (collectorStatus.items.find(entry => entry.key === key) || result.item || null)
+      : (result.item || null);
+
+    res.json({
+      ...result,
+      item,
+      collectorStatus
+    });
+  } catch (err) {
+    console.error('[ADMIN_COLLECTOR_RUN]', err);
+    res.status(500).json({ error: '수집기 수동 실행 중 오류가 발생했습니다.' });
+  }
+});
+
+/* ─────────────────────────────
    GET /api/admin/users
 ───────────────────────────── */
 router.get('/users', async (req, res) => {
