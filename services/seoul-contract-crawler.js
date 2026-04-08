@@ -1,6 +1,7 @@
 const axios = require('axios');
 const https = require('https');
 const Notice = require('../models/Notice');
+const { buildVisibilityMeta } = require('../utils/notice-visibility');
 
 const SOURCE_SYSTEM = 'seoul_contract';
 
@@ -288,6 +289,12 @@ function mapListItemToDoc(item) {
   const publishedAt = parseDateOnly(item.publishedDate);
   const openingAt = parseDateOnly(item.openingDate);
   const bidStartAt = parseDateOnly(item.bidStartDate);
+  const visibilityMeta = buildVisibilityMeta({
+    sourceSystem: SOURCE_SYSTEM,
+    bidMethod: item.orgGroup || '',
+    contractMethod: '',
+    detailMethod: '',
+  });
 
   return {
     bid_ntce_no: item.bidNo,
@@ -297,6 +304,9 @@ function mapListItemToDoc(item) {
     notice_type: item.noticeType || '',
     bid_method: item.orgGroup || '',
     contract_method: '',
+    normalized_bid_method: visibilityMeta.normalized_bid_method,
+    is_hidden: visibilityMeta.is_hidden,
+    hidden_reason: visibilityMeta.hidden_reason,
     issuing_org: item.issuingOrg || '',
     demanding_org: item.issuingOrg || '',
     budget: 0,
@@ -527,13 +537,24 @@ function hasMeaningfulDetail(detail) {
 
 function mergeDoc(baseDoc, detail, sourceUrl) {
   const attachmentUrls = (detail.attachments || []).map((a) => a.url).filter(Boolean);
+  const nextBidMethod = detail.bidMethod || baseDoc.bid_method;
+  const nextContractMethod = detail.contractMethod || baseDoc.contract_method;
+  const visibilityMeta = buildVisibilityMeta({
+    sourceSystem: SOURCE_SYSTEM,
+    bidMethod: nextBidMethod,
+    contractMethod: nextContractMethod,
+    detailMethod: '',
+  });
 
   return {
     ...baseDoc,
     issuing_org: detail.issuingOrg || baseDoc.issuing_org,
     demanding_org: detail.demandingOrg || baseDoc.demanding_org,
-    bid_method: detail.bidMethod || baseDoc.bid_method,
-    contract_method: detail.contractMethod || baseDoc.contract_method,
+    bid_method: nextBidMethod,
+    contract_method: nextContractMethod,
+    normalized_bid_method: visibilityMeta.normalized_bid_method,
+    is_hidden: visibilityMeta.is_hidden,
+    hidden_reason: visibilityMeta.hidden_reason,
     published_at: detail.publishedAt || baseDoc.published_at,
     closing_at: detail.closingAt || baseDoc.closing_at,
     opening_at: detail.openingAt || baseDoc.opening_at,
