@@ -4,6 +4,7 @@ const auth = require('../middleware/auth');
 const Inquiry = require('../models/Inquiry');
 const User = require('../models/User');
 const PageView = require('../models/PageView');
+const CollectorRunLog = require('../models/collector-run-log');
 const scheduler = require('../services/scheduler');
 
 function requireAdmin(req, res, next) {
@@ -57,6 +58,33 @@ function toUserListItem(user) {
   };
 }
 
+function toCollectorLogItem(row) {
+  const item = row.toJSON ? row.toJSON() : row;
+  return {
+    id: item.id,
+    collector_key: item.collector_key,
+    collector_label: item.collector_label,
+    kind: item.kind,
+    job_name: item.job_name,
+    trigger_type: item.trigger_type,
+    status: item.status,
+    started_at: item.started_at,
+    finished_at: item.finished_at,
+    duration_ms: item.duration_ms,
+    result: item.result,
+    error_message: item.error_message,
+    skip_reason: item.skip_reason,
+    actor_user_id: item.actor_user_id,
+    actor_email: item.actor_email,
+    actor_name: item.actor_name,
+    actor_role: item.actor_role,
+    request_payload: item.request_payload,
+    metadata: item.metadata,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt
+  };
+}
+
 /* ─────────────────────────────
    GET /api/admin/dashboard
 ───────────────────────────── */
@@ -76,7 +104,8 @@ router.get('/dashboard', async (req, res) => {
       todayPageViews,
       todayPageViewRows,
       recentUsers,
-      recentInquiries
+      recentInquiries,
+      recentCollectorLogs
     ] = await Promise.all([
       User.count(),
       User.count({ where: { role: 'admin' } }),
@@ -101,6 +130,10 @@ router.get('/dashboard', async (req, res) => {
         order: [['createdAt', 'DESC']],
         limit: 5,
         attributes: ['id', 'name', 'email', 'title', 'category', 'status', 'createdAt', 'message']
+      }),
+      CollectorRunLog.findAll({
+        order: [['createdAt', 'DESC']],
+        limit: 20
       })
     ]);
 
@@ -132,9 +165,11 @@ router.get('/dashboard', async (req, res) => {
         pageviewsToday: todayPageViews,
         visitorsToday: todayVisitors,
         collectorsEnabled,
-        collectorsRunning
+        collectorsRunning,
+        collectorLogCount: recentCollectorLogs.length
       },
       collectorStatus,
+      recentCollectorLogs: recentCollectorLogs.map(toCollectorLogItem),
       recentUsers: recentUsers.map(user => toUserListItem(user)),
       recentInquiries: recentInquiries.map(item => {
         const row = item.toJSON();
@@ -151,13 +186,79 @@ router.get('/dashboard', async (req, res) => {
 });
 
 /* ─────────────────────────────
+   GET /api/admin/collectors/logs
+───────────────────────────── */
+router.get('/collectors/logs', async (req, res) => {
+  try {
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const offset = (page - 1) * limit;
+    const key = String(req.query.key || 'all').trim();
+    const status = String(req.query.status || 'all').trim();
+
+    const where = {};
+
+    if (key && key !== 'all') {
+      where.collector_key = key;
+    }
+
+    if (status && status !== 'all') {
+      if (!['started', 'success', 'error', 'skipped'].includes(status)) {
+        return res.status(400).json({ error: '유효하지 않은 상태 필터입니다.' });
+      }
+      where.status = status;
+    }
+
+    const result = await CollectorRunLog.findAndCountAll({
+      where,
+      order: [['createdAt', 'DESC']],
+      offset,
+      limit
+    });
+
+    res.json({
+      data: result.rows.map(toCollectorLogItem),
+      pagination: {
+        total: result.count,
+        page,
+        limit,
+        pages: Math.max(Math.ceil(result.count / limit), 1)
+      },
+      filters: { key, status }
+    });
+  } catch (err) {
+    console.error('[ADMIN_COLLECTOR_LOGS]', err);
+    res.status(500).json({ error: '수집기 실행 이력을 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+/* ─────────────────────────────
    POST /api/admin/collectors/:key/run
 ───────────────────────────── */
 router.post('/collectors/:key/run', async (req, res) => {
   try {
     const key = String(req.params.key || '').trim();
+
+    const actorRow = req.userId
+      ? await User.findByPk(req.userId, {
+          attributes: ['id', 'email', 'nickname', 'role']
+        })
+      : null;
+
+    const actor = actorRow
+      ? {
+          userId: actorRow.id,
+          email: actorRow.email,
+          name: actorRow.nickname,
+          role: actorRow.role
+        }
+      : {
+          userId: req.userId || null,
+          role: req.userRole || 'admin'
+        };
+
     const result = typeof scheduler.runCollectorNow === 'function'
-      ? scheduler.runCollectorNow(key, req.body || {})
+      ? scheduler.runCollectorNow(key, req.body || {}, actor)
       : {
           ok: false,
           started: false,
@@ -178,10 +279,16 @@ router.post('/collectors/:key/run', async (req, res) => {
       ? (collectorStatus.items.find(entry => entry.key === key) || result.item || null)
       : (result.item || null);
 
+    const recentCollectorLogs = await CollectorRunLog.findAll({
+      order: [['createdAt', 'DESC']],
+      limit: 20
+    });
+
     res.json({
       ...result,
       item,
-      collectorStatus
+      collectorStatus,
+      recentCollectorLogs: recentCollectorLogs.map(toCollectorLogItem)
     });
   } catch (err) {
     console.error('[ADMIN_COLLECTOR_RUN]', err);
