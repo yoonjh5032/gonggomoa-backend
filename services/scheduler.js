@@ -50,6 +50,175 @@ let runningPurgeJob = false;
 let runningLocalGovJob = false;
 let runningG2bSyncJob = '';
 
+function createMonitorEntry(key, label, options = {}) {
+  return {
+    key,
+    label,
+    kind: options.kind || 'collector',
+    enabled: options.enabled !== undefined ? Boolean(options.enabled) : true,
+    schedules: Array.isArray(options.schedules) ? options.schedules : [],
+    running: false,
+    lastJob: '',
+    lastStartedAt: null,
+    lastFinishedAt: null,
+    lastSuccessAt: null,
+    lastErrorAt: null,
+    lastErrorMessage: '',
+    lastSkippedAt: null,
+    lastSkippedReason: '',
+    lastDurationMs: null,
+    lastResult: null,
+    updatedAt: null,
+    _startedAtMs: null,
+  };
+}
+
+const collectorMonitor = {
+  g2b_api: createMonitorEntry('g2b_api', '나라장터 G2B', {
+    kind: 'collector',
+    schedules: ['minute-window', G2B_BACKFILL_CRON, G2B_OPEN_RESYNC_CRON],
+  }),
+  seoul_contract: createMonitorEntry('seoul_contract', '서울 계약마당', {
+    kind: 'collector',
+    schedules: ['0 9 * * *', '0 17 * * *'],
+  }),
+  local_gov: createMonitorEntry('local_gov', '지자체 공고', {
+    kind: 'collector',
+    schedules: [LOCAL_GOV_CRON],
+  }),
+  purge_expired: createMonitorEntry('purge_expired', '만료 공고 삭제', {
+    kind: 'maintenance',
+    enabled: true,
+    schedules: ['5 0 * * *'],
+  }),
+};
+
+function cloneMonitorEntry(entry) {
+  return {
+    key: entry.key,
+    label: entry.label,
+    kind: entry.kind,
+    enabled: entry.enabled,
+    schedules: entry.schedules,
+    running: entry.running,
+    lastJob: entry.lastJob,
+    lastStartedAt: entry.lastStartedAt,
+    lastFinishedAt: entry.lastFinishedAt,
+    lastSuccessAt: entry.lastSuccessAt,
+    lastErrorAt: entry.lastErrorAt,
+    lastErrorMessage: entry.lastErrorMessage,
+    lastSkippedAt: entry.lastSkippedAt,
+    lastSkippedReason: entry.lastSkippedReason,
+    lastDurationMs: entry.lastDurationMs,
+    lastResult: entry.lastResult,
+    updatedAt: entry.updatedAt,
+  };
+}
+
+function normalizeMonitorResult(result) {
+  if (result == null) return null;
+  if (typeof result !== 'object') return { value: result };
+
+  const allowed = [
+    'new',
+    'updated',
+    'errors',
+    'parsed',
+    'kept',
+    'newCount',
+    'updatedCount',
+    'errorCount',
+    'parsedCount',
+    'attachmentNoticeCount',
+    'attachmentFileCount',
+    'deleted',
+    'reason',
+    'dateWindow',
+  ];
+
+  const out = {};
+  allowed.forEach((key) => {
+    if (result[key] !== undefined) out[key] = result[key];
+  });
+  return out;
+}
+
+function syncCollectorEnabledState() {
+  ['g2b_api', 'seoul_contract', 'local_gov'].forEach((key) => {
+    if (collectorMonitor[key]) {
+      collectorMonitor[key].enabled = isSourceEnabled(key);
+    }
+  });
+}
+
+function markMonitorStart(key, jobName) {
+  syncCollectorEnabledState();
+  const entry = collectorMonitor[key];
+  if (!entry) return;
+
+  const nowIso = new Date().toISOString();
+  entry.running = true;
+  entry.lastJob = jobName || entry.lastJob || '';
+  entry.lastStartedAt = nowIso;
+  entry.lastErrorMessage = '';
+  entry.updatedAt = nowIso;
+  entry._startedAtMs = Date.now();
+}
+
+function markMonitorSuccess(key, jobName, result = null) {
+  syncCollectorEnabledState();
+  const entry = collectorMonitor[key];
+  if (!entry) return;
+
+  const nowIso = new Date().toISOString();
+  entry.running = false;
+  entry.lastJob = jobName || entry.lastJob || '';
+  entry.lastFinishedAt = nowIso;
+  entry.lastSuccessAt = nowIso;
+  entry.lastDurationMs = entry._startedAtMs ? Date.now() - entry._startedAtMs : null;
+  entry.lastResult = normalizeMonitorResult(result);
+  entry.updatedAt = nowIso;
+  entry._startedAtMs = null;
+}
+
+function markMonitorError(key, jobName, err, result = null) {
+  syncCollectorEnabledState();
+  const entry = collectorMonitor[key];
+  if (!entry) return;
+
+  const nowIso = new Date().toISOString();
+  entry.running = false;
+  entry.lastJob = jobName || entry.lastJob || '';
+  entry.lastFinishedAt = nowIso;
+  entry.lastErrorAt = nowIso;
+  entry.lastErrorMessage = err ? String(err.message || err) : 'unknown_error';
+  entry.lastDurationMs = entry._startedAtMs ? Date.now() - entry._startedAtMs : null;
+  entry.lastResult = normalizeMonitorResult(result);
+  entry.updatedAt = nowIso;
+  entry._startedAtMs = null;
+}
+
+function markMonitorSkipped(key, reason, jobName = '') {
+  syncCollectorEnabledState();
+  const entry = collectorMonitor[key];
+  if (!entry) return;
+
+  const nowIso = new Date().toISOString();
+  entry.running = false;
+  entry.lastJob = jobName || entry.lastJob || '';
+  entry.lastSkippedAt = nowIso;
+  entry.lastSkippedReason = reason || '';
+  entry.updatedAt = nowIso;
+}
+
+function getCollectorStatuses() {
+  syncCollectorEnabledState();
+  return {
+    generatedAt: new Date().toISOString(),
+    items: Object.values(collectorMonitor).map(cloneMonitorEntry),
+  };
+}
+
 function parseCsvList(raw) {
   if (!raw) return [];
   return String(raw)
@@ -127,8 +296,12 @@ function finishG2bSync(jobName) {
 }
 
 async function purgeExpiredNotices() {
-  if (runningPurgeJob) return;
+  if (runningPurgeJob) {
+    markMonitorSkipped('purge_expired', 'already_running', 'purge');
+    return;
+  }
   runningPurgeJob = true;
+  markMonitorStart('purge_expired', 'purge');
 
   try {
     const deleted = await Notice.destroy({
@@ -140,8 +313,12 @@ async function purgeExpiredNotices() {
     });
 
     console.log(`[스케줄러] 만료 공고 삭제 완료 — ${deleted}건`);
+    markMonitorSuccess('purge_expired', 'purge', { deleted });
+    return { deleted };
   } catch (err) {
     console.error('[스케줄러] 만료 공고 삭제 실패', err.message);
+    markMonitorError('purge_expired', 'purge', err);
+    throw err;
   } finally {
     runningPurgeJob = false;
   }
@@ -168,11 +345,13 @@ async function runG2bRangeSync(label, fromDate, toDate = new Date()) {
 async function runMinuteCollectors() {
   if (runningMinuteJob) {
     console.log('[스케줄러] 분단위 수집 이미 실행 중, 건너뜀');
+    markMonitorSkipped('g2b_api', 'minute_already_running', 'minute');
     return;
   }
 
   if (!isSourceEnabled('g2b_api')) {
     console.log('[스케줄러] g2b_api 비활성화 상태');
+    markMonitorSkipped('g2b_api', 'source_disabled', 'minute');
     return;
   }
 
@@ -181,14 +360,17 @@ async function runMinuteCollectors() {
 
   if (hour < 8 || hour >= 19) {
     console.log(`[스케줄러] KST ${hour}시 — 수집 시간 범위 밖, 건너뜀`);
+    markMonitorSkipped('g2b_api', `out_of_window_${hour}`, 'minute');
     return;
   }
 
   if (!tryStartG2bSync('minute')) {
+    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'minute');
     return;
   }
 
   runningMinuteJob = true;
+  markMonitorStart('g2b_api', 'minute');
 
   try {
     console.log(
@@ -199,9 +381,11 @@ async function runMinuteCollectors() {
     );
 
     await purgeExpiredNotices();
-    await g2bCrawler.crawl({ minuteMode: true });
+    const result = await g2bCrawler.crawl({ minuteMode: true });
+    markMonitorSuccess('g2b_api', 'minute', result);
   } catch (err) {
     console.error('[스케줄러] 분단위 수집 실패', err.message);
+    markMonitorError('g2b_api', 'minute', err);
   } finally {
     runningMinuteJob = false;
     finishG2bSync('minute');
@@ -211,20 +395,26 @@ async function runMinuteCollectors() {
 async function runG2bBackfill(hours = G2B_BACKFILL_HOURS) {
   if (!isSourceEnabled('g2b_api')) {
     console.log('[스케줄러] g2b_api 비활성화 상태');
+    markMonitorSkipped('g2b_api', 'source_disabled', 'backfill');
     return;
   }
 
   if (!tryStartG2bSync('backfill')) {
+    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'backfill');
     return;
   }
+
+  markMonitorStart('g2b_api', 'backfill');
 
   try {
     const toDate = new Date();
     const fromDate = new Date(toDate.getTime() - hours * 60 * 60 * 1000);
 
-    await runG2bRangeSync(`G2B 보정 수집(${hours}h)`, fromDate, toDate);
+    const result = await runG2bRangeSync(`G2B 보정 수집(${hours}h)`, fromDate, toDate);
+    markMonitorSuccess('g2b_api', 'backfill', result);
   } catch (err) {
     console.error('[스케줄러] G2B 보정 수집 실패', err.message);
+    markMonitorError('g2b_api', 'backfill', err);
   } finally {
     finishG2bSync('backfill');
   }
@@ -233,20 +423,26 @@ async function runG2bBackfill(hours = G2B_BACKFILL_HOURS) {
 async function runG2bStartupBackfill() {
   if (!isSourceEnabled('g2b_api')) {
     console.log('[스케줄러] g2b_api 비활성화 상태');
+    markMonitorSkipped('g2b_api', 'source_disabled', 'startup_backfill');
     return;
   }
 
   if (!tryStartG2bSync('startup_backfill')) {
+    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'startup_backfill');
     return;
   }
+
+  markMonitorStart('g2b_api', 'startup_backfill');
 
   try {
     const fromDate = getKstStartOfDay(1);
     const toDate = new Date();
 
-    await runG2bRangeSync('G2B 기동 보정 수집(오늘+어제)', fromDate, toDate);
+    const result = await runG2bRangeSync('G2B 기동 보정 수집(오늘+어제)', fromDate, toDate);
+    markMonitorSuccess('g2b_api', 'startup_backfill', result);
   } catch (err) {
     console.error('[스케줄러] G2B 기동 보정 수집 실패', err.message);
+    markMonitorError('g2b_api', 'startup_backfill', err);
   } finally {
     finishG2bSync('startup_backfill');
   }
@@ -255,12 +451,16 @@ async function runG2bStartupBackfill() {
 async function runG2bOpenNoticeResync() {
   if (!isSourceEnabled('g2b_api')) {
     console.log('[스케줄러] g2b_api 비활성화 상태');
+    markMonitorSkipped('g2b_api', 'source_disabled', 'open_resync');
     return;
   }
 
   if (!tryStartG2bSync('open_resync')) {
+    markMonitorSkipped('g2b_api', 'other_g2b_job_running', 'open_resync');
     return;
   }
+
+  markMonitorStart('g2b_api', 'open_resync');
 
   try {
     const now = new Date();
@@ -297,9 +497,11 @@ async function runG2bOpenNoticeResync() {
       );
     }
 
-    await runG2bRangeSync('G2B 미마감 공고 재동기화', fromDate, now);
+    const result = await runG2bRangeSync('G2B 미마감 공고 재동기화', fromDate, now);
+    markMonitorSuccess('g2b_api', 'open_resync', result);
   } catch (err) {
     console.error('[스케줄러] G2B 미마감 공고 재동기화 실패', err.message);
+    markMonitorError('g2b_api', 'open_resync', err);
   } finally {
     finishG2bSync('open_resync');
   }
@@ -308,15 +510,18 @@ async function runG2bOpenNoticeResync() {
 async function runSeoulContractTwiceDaily() {
   if (!isSourceEnabled('seoul_contract')) {
     console.log('[스케줄러] seoul_contract 비활성화 상태');
+    markMonitorSkipped('seoul_contract', 'source_disabled', 'scheduled');
     return;
   }
 
   if (runningSeoulContractJob) {
     console.log('[스케줄러] 서울 계약마당 수집 이미 실행 중, 건너뜀');
+    markMonitorSkipped('seoul_contract', 'already_running', 'scheduled');
     return;
   }
 
   runningSeoulContractJob = true;
+  markMonitorStart('seoul_contract', 'scheduled');
 
   try {
     const today = formatKstDate();
@@ -324,14 +529,16 @@ async function runSeoulContractTwiceDaily() {
 
     await purgeExpiredNotices();
 
-    await seoulContractCrawler.crawl({
+    const result = await seoulContractCrawler.crawl({
       fetchDetail: true,
       forceRefreshDetail: false,
       maxPages: Number(process.env.SEOUL_CONTRACT_PAGES_FULL || 8),
       recordCount: Number(process.env.SEOUL_CONTRACT_RECORD_COUNT || 50),
     });
+    markMonitorSuccess('seoul_contract', 'scheduled', result);
   } catch (err) {
     console.error('[스케줄러] 서울 계약마당 정기 수집 실패', err.message);
+    markMonitorError('seoul_contract', 'scheduled', err);
   } finally {
     runningSeoulContractJob = false;
   }
@@ -340,15 +547,18 @@ async function runSeoulContractTwiceDaily() {
 async function runLocalGovRegularCollection(reason = 'scheduled', options = {}) {
   if (!isSourceEnabled('local_gov')) {
     console.log('[스케줄러] local_gov 비활성화 상태');
+    markMonitorSkipped('local_gov', 'source_disabled', reason);
     return;
   }
 
   if (runningLocalGovJob) {
     console.log('[스케줄러] local_gov 수집 이미 실행 중, 건너뜀');
+    markMonitorSkipped('local_gov', 'already_running', reason);
     return;
   }
 
   runningLocalGovJob = true;
+  markMonitorStart('local_gov', reason);
 
   try {
     const configuredKeys = parseCsvList(process.env.LOCAL_GOV_KEYS);
@@ -384,8 +594,10 @@ async function runLocalGovRegularCollection(reason = 'scheduled', options = {}) 
     console.log(
       `[스케줄러] local_gov 정기 수집 완료 (${reason}) — parsed=${result.parsed} kept=${result.kept} new=${result.newCount} updated=${result.updatedCount} errors=${result.errorCount}`
     );
+    markMonitorSuccess('local_gov', reason, result);
   } catch (err) {
     console.error(`[스케줄러] local_gov 정기 수집 실패 (${reason})`, err.message);
+    markMonitorError('local_gov', reason, err);
   } finally {
     runningLocalGovJob = false;
   }
@@ -413,6 +625,7 @@ async function initialLoad() {
 }
 
 function start() {
+  syncCollectorEnabledState();
   console.log(`[스케줄러] 활성 수집기: ${ENABLED_COLLECTOR_SOURCES.join(', ')}`);
 
   cron.schedule('* * * * *', runMinuteCollectors, {
@@ -465,6 +678,7 @@ function start() {
 module.exports = {
   start,
   getEnabledCollectorSources,
+  getCollectorStatuses,
   purgeExpiredNotices,
   runG2bBackfill,
   runG2bStartupBackfill,
