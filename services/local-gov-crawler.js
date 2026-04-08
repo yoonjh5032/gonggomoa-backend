@@ -14,6 +14,7 @@ try {
 
 const Notice = require('../models/Notice');
 const sourceMap = require('../collectors/local-gov/sources');
+const { buildVisibilityMeta } = require('../utils/notice-visibility');
 
 const SOURCE_SYSTEM = 'local_gov';
 
@@ -964,6 +965,12 @@ function parseDetailByType(html, detailUrl, source) {
 
 function buildNoticeDoc(source, detailUrl, parsed) {
   const stableId = extractStableId(detailUrl, source);
+  const visibilityMeta = buildVisibilityMeta({
+    sourceSystem: SOURCE_SYSTEM,
+    bidMethod: '',
+    contractMethod: '',
+    detailMethod: '',
+  });
 
   return {
     bid_ntce_no: stableId,
@@ -973,6 +980,9 @@ function buildNoticeDoc(source, detailUrl, parsed) {
     notice_type: parsed.noticeType || '',
     bid_method: '',
     contract_method: '',
+    normalized_bid_method: visibilityMeta.normalized_bid_method,
+    is_hidden: visibilityMeta.is_hidden,
+    hidden_reason: visibilityMeta.hidden_reason,
     issuing_org: parsed.issuingOrg || `${source.district_name}청`,
     demanding_org: parsed.issuingOrg || `${source.district_name}청`,
     budget: 0,
