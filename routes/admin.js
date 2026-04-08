@@ -4,6 +4,7 @@ const auth = require('../middleware/auth');
 const Inquiry = require('../models/Inquiry');
 const User = require('../models/User');
 const PageView = require('../models/PageView');
+const scheduler = require('../services/scheduler');
 
 function requireAdmin(req, res, next) {
   if (req.userRole !== 'admin') {
@@ -107,6 +108,17 @@ router.get('/dashboard', async (req, res) => {
       todayPageViewRows.map(row => String(row.session_id || '').trim()).filter(Boolean)
     ).size;
 
+    const collectorStatus = typeof scheduler.getCollectorStatuses === 'function'
+      ? scheduler.getCollectorStatuses()
+      : { generatedAt: new Date().toISOString(), items: [] };
+
+    const collectorItems = Array.isArray(collectorStatus.items)
+      ? collectorStatus.items
+      : [];
+
+    const collectorsEnabled = collectorItems.filter(item => item.enabled).length;
+    const collectorsRunning = collectorItems.filter(item => item.running).length;
+
     res.json({
       summary: {
         usersTotal,
@@ -118,8 +130,11 @@ router.get('/dashboard', async (req, res) => {
         inquiriesInProgress,
         inquiriesDone,
         pageviewsToday: todayPageViews,
-        visitorsToday: todayVisitors
+        visitorsToday: todayVisitors,
+        collectorsEnabled,
+        collectorsRunning
       },
+      collectorStatus,
       recentUsers: recentUsers.map(user => toUserListItem(user)),
       recentInquiries: recentInquiries.map(item => {
         const row = item.toJSON();
