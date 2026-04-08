@@ -1,6 +1,7 @@
 const axios = require('axios');
 const xml2js = require('xml2js');
 const Notice = require('../models/Notice');
+const { buildVisibilityMeta } = require('../utils/notice-visibility');
 
 const BASE = 'https://apis.data.go.kr/1230000/ad/BidPublicInfoService';
 
@@ -78,35 +79,12 @@ function normalizeG2bBidMethod(item) {
 function evaluateHiddenNotice(item) {
   const { bidMethod, contractMethod, detailMethod } = normalizeG2bBidMethod(item);
 
-  if (bidMethod === '전자시담') {
-    return {
-      is_hidden: true,
-      hidden_reason: 'g2b_bid_method_전자시담',
-      normalized_bid_method: bidMethod
-    };
-  }
-
-  if (contractMethod === '수의시담') {
-    return {
-      is_hidden: true,
-      hidden_reason: 'g2b_contract_method_수의시담',
-      normalized_bid_method: contractMethod
-    };
-  }
-
-  if (detailMethod === '수의시담') {
-    return {
-      is_hidden: true,
-      hidden_reason: 'g2b_detail_method_수의시담',
-      normalized_bid_method: detailMethod
-    };
-  }
-
-  return {
-    is_hidden: false,
-    hidden_reason: '',
-    normalized_bid_method: detailMethod || contractMethod || bidMethod || ''
-  };
+  return buildVisibilityMeta({
+    sourceSystem: 'g2b_api',
+    bidMethod,
+    contractMethod,
+    detailMethod
+  });
 }
 
 async function fetchEndpointPage(endpoint, inqryBgnDt, inqryEndDt, pageNo = 1) {
