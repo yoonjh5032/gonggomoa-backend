@@ -33,8 +33,8 @@ const noticeListCache = new Map();
 const noticeCountCache = new Map();
 const noticeStatsCache = new Map();
 
-function getCalendarCacheKey(year, month) {
-  return year + '-' + String(month).padStart(2, '0');
+function getCalendarCacheKey(year, month, source = '') {
+  return year + '-' + String(month).padStart(2, '0') + ':' + (source || 'all');
 }
 
 function readCache(map, key, ttl) {
@@ -194,7 +194,35 @@ function buildNoticeCountCacheKey(params) {
   });
 }
 
-function toNoticeListItem(n) {
+function buildSourceSystemFilter(source) {
+  if (!source) return null;
+
+  // 정책:
+  // seoul_board = 서울시·구청 게시판
+  // 현재 구청 원문 공고는 local_gov 로 저장되어 있으므로
+  // seoul_board 요청 시 local_gov 도 함께 조회한다.
+  if (source === 'seoul_board') {
+    return {
+      [Op.in]: ['seoul_board', 'local_gov']
+    };
+  }
+
+  return source;
+}
+
+function mapResponseSourceSystem(sourceSystem, requestedSource = '') {
+  // 정책:
+  // public API 에서는 local_gov 를 서울시·구청 게시판(seoul_board)로 노출한다.
+  // - source=seoul_board 요청 시: local_gov -> seoul_board
+  // - source 미지정(전체 조회) 시에도 public 표시는 seoul_board 로 통일
+  if (sourceSystem === 'local_gov' && (!requestedSource || requestedSource === 'seoul_board')) {
+    return 'seoul_board';
+  }
+
+  return sourceSystem;
+}
+
+function toNoticeListItem(n, query = {}) {
   return {
     id: n.id,
     title: n.title,
@@ -205,7 +233,7 @@ function toNoticeListItem(n) {
     closing_at: n.closing_at ? new Date(n.closing_at).toISOString() : null,
     published_at: n.published_at ? new Date(n.published_at).toISOString() : null,
     opening_at: n.opening_at ? new Date(n.opening_at).toISOString() : null,
-    source_system: n.source_system,
+    source_system: mapResponseSourceSystem(n.source_system, query.source),
     detail_url: n.detail_url || '',
     createdAt: n.createdAt ? new Date(n.createdAt).toISOString() : null,
     updatedAt: n.updatedAt ? new Date(n.updatedAt).toISOString() : null
@@ -267,7 +295,10 @@ function applySearchFilters(where, query) {
     where[Op.and].push({ [Op.or]: keywordOr });
   }
 
-  if (query.source) where.source_system = query.source;
+  if (query.source) {
+    where.source_system = buildSourceSystemFilter(query.source);
+  }
+
   if (query.type) where.notice_type = query.type;
 
   if (query.days > 0) {
@@ -322,7 +353,7 @@ router.get('/', async (req, res) => {
     ]);
 
     const response = {
-      data: rows.map(toNoticeListItem),
+      data: rows.map((n) => toNoticeListItem(n, query)),
       total,
       page: query.page,
       limit: query.limit,
@@ -376,8 +407,11 @@ router.get('/stats', async (req, res) => {
 
     const response = {
       g2b: map.g2b_api || 0,
-      seoul: map.seoul_board || 0,
+      // 정책상 seoul_board = 서울시·구청 게시판
+      // 현재 구청 원문 공고는 local_gov 로 저장되므로 함께 합산
+      seoul: (map.seoul_board || 0) + (map.local_gov || 0),
       contract: map.seoul_contract || 0,
+      // 내부 호환용으로 유지
       local_gov: map.local_gov || 0,
       total
     };
@@ -393,17 +427,20 @@ router.get('/stats', async (req, res) => {
 
 /* ════════════════════════════════════════════════
    GET /api/notices/calendar/:year/:month
+   - source 쿼리 파라미터를 선택적으로 받을 수 있음
+   - public 정책상 local_gov 를 seoul_board 로 매핑
 ════════════════════════════════════════════════ */
 router.get('/calendar/:year/:month', async (req, res) => {
   try {
     const y = parseInt(req.params.year, 10);
     const m = parseInt(req.params.month, 10);
+    const source = normalizeText(req.query.source, 30);
 
     if (!y || !m || m < 1 || m > 12) {
       return res.status(400).json({ error: '올바른 연/월을 입력하세요.' });
     }
 
-    const cacheKey = getCalendarCacheKey(y, m);
+    const cacheKey = getCalendarCacheKey(y, m, source);
     const cached = getCachedCalendar(cacheKey);
     if (cached) {
       return res.json(cached);
@@ -414,6 +451,17 @@ router.get('/calendar/:year/:month', async (req, res) => {
 
     const now = new Date();
     const effectiveFrom = from > now ? from : now;
+
+    const where = {
+      [Op.and]: [
+        { closing_at: { [Op.between]: [effectiveFrom, to] } },
+        buildVisibleNoticeCondition()
+      ]
+    };
+
+    if (source) {
+      where.source_system = buildSourceSystemFilter(source);
+    }
 
     const list = await Notice.findAll({
       attributes: [
@@ -427,12 +475,7 @@ router.get('/calendar/:year/:month', async (req, res) => {
         'source_system',
         'detail_url'
       ],
-      where: {
-        [Op.and]: [
-          { closing_at: { [Op.between]: [effectiveFrom, to] } },
-          buildVisibleNoticeCondition()
-        ]
-      },
+      where,
       order: [['closing_at', 'ASC']],
       raw: true
     });
@@ -451,7 +494,7 @@ router.get('/calendar/:year/:month', async (req, res) => {
         budget_formatted: n.budget_formatted,
         closing_at: n.closing_at ? new Date(n.closing_at).toISOString() : null,
         published_at: n.published_at ? new Date(n.published_at).toISOString() : null,
-        source_system: n.source_system,
+        source_system: mapResponseSourceSystem(n.source_system, source),
         detail_url: n.detail_url || ''
       });
     });
@@ -466,6 +509,7 @@ router.get('/calendar/:year/:month', async (req, res) => {
 
 /* ════════════════════════════════════════════════
    GET /api/notices/:id
+   - 상세 응답에서도 public 정책상 local_gov 를 seoul_board 로 매핑
 ════════════════════════════════════════════════ */
 router.get('/:id', async (req, res) => {
   try {
@@ -485,6 +529,7 @@ router.get('/:id', async (req, res) => {
 
     res.json({
       ...notice,
+      source_system: mapResponseSourceSystem(notice.source_system),
       closing_at: notice.closing_at ? new Date(notice.closing_at).toISOString() : null,
       published_at: notice.published_at ? new Date(notice.published_at).toISOString() : null,
       opening_at: notice.opening_at ? new Date(notice.opening_at).toISOString() : null
