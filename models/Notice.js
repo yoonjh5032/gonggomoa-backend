@@ -118,7 +118,18 @@ const Notice = sequelize.define('Notice', {
     { fields: ['notice_type'] },
     { fields: ['is_hidden'] },
     { fields: ['source_system', 'is_hidden'] },
-    { fields: ['title'], type: 'FULLTEXT' }
+    { fields: ['is_hidden', 'closing_at'], name: 'idx_notice_visible_closing' },
+    { fields: ['source_system', 'is_hidden', 'closing_at'], name: 'idx_notice_source_visible_closing' },
+    { fields: ['notice_type', 'is_hidden', 'closing_at'], name: 'idx_notice_type_visible_closing' },
+    { fields: ['source_system', 'notice_type', 'is_hidden', 'closing_at'], name: 'idx_notice_source_type_visible_closing' },
+    { fields: ['is_hidden', 'published_at'], name: 'idx_notice_visible_published' },
+    { fields: ['source_system', 'is_hidden', 'published_at'], name: 'idx_notice_source_visible_published' },
+    { fields: ['notice_type', 'is_hidden', 'published_at'], name: 'idx_notice_type_visible_published' },
+    {
+      fields: ['title', 'issuing_org', 'demanding_org'],
+      type: 'FULLTEXT',
+      name: 'ft_notice_search'
+    }
   ]
 });
 
