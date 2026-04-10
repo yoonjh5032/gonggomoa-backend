@@ -40,6 +40,10 @@ const REQUEST_HEADERS = {
 const RELAXED_STARTUP_INCLUDE_REGEX =
   /(공고|모집|공개\s*모집|모집\s*공고|용역|입찰|재입찰|재공고|위탁|민간위탁|제안서|제안요청서|평가위원|사업자|사업자\s*모집|수탁|수탁기관|운영기관|수행기관|협상|협상에\s*의한\s*계약|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행|안전점검|지정\s*공고|제출|나라장터)/i;
 
+const LOCAL_GOV_DATE_WINDOW_GRACE_DAYS = Number(
+  process.env.LOCAL_GOV_DATE_WINDOW_GRACE_DAYS || 14
+);
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -85,14 +89,8 @@ function absoluteUrl(url, baseUrl) {
   const raw = decodeHtml(url).trim();
   if (!raw) return '';
 
-  if (/^(javascript:|#|about:blank$)/i.test(raw)) {
-    return '';
-  }
-
   try {
-    const resolved = new URL(raw, baseUrl).toString();
-    if (/^javascript:/i.test(resolved)) return '';
-    return resolved;
+    return new URL(raw, baseUrl).toString();
   } catch (_) {
     return '';
   }
@@ -836,11 +834,31 @@ function pickReferenceDate(parsedDetail = {}) {
   return null;
 }
 
-function isWithinDateWindow(parsedDetail, window) {
+function getDateWindowGraceDays(options = {}) {
+  const optionGrace = Number(options.dateGraceDays);
+  if (Number.isFinite(optionGrace) && optionGrace >= 0) {
+    return optionGrace;
+  }
+
+  const envGrace = Number(LOCAL_GOV_DATE_WINDOW_GRACE_DAYS);
+  if (Number.isFinite(envGrace) && envGrace >= 0) {
+    return envGrace;
+  }
+
+  return 0;
+}
+
+function isWithinDateWindow(parsedDetail, window, options = {}) {
   if (!window?.startDate && !window?.endDate) return true;
   const refDate = pickReferenceDate(parsedDetail);
   if (!refDate) return true;
-  if (window.startDate && refDate < window.startDate) return false;
+
+  const graceDays = getDateWindowGraceDays(options);
+  const graceMs = graceDays > 0 ? graceDays * 24 * 60 * 60 * 1000 : 0;
+  const effectiveStartDate =
+    window.startDate && graceMs > 0 ? new Date(window.startDate.getTime() - graceMs) : window.startDate;
+
+  if (effectiveStartDate && refDate < effectiveStartDate) return false;
   if (window.endDate && refDate > window.endDate) return false;
   return true;
 }
@@ -1165,7 +1183,7 @@ async function crawlSource(source, options = {}) {
         continue;
       }
 
-      if (!isWithinDateWindow(parsedDetail, dateWindow)) {
+      if (!isWithinDateWindow(parsedDetail, dateWindow, options)) {
         droppedByDate += 1;
         continue;
       }
