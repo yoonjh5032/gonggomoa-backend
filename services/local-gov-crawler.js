@@ -38,7 +38,7 @@ const REQUEST_HEADERS = {
 };
 
 const RELAXED_STARTUP_INCLUDE_REGEX =
-  /(공고|모집|용역|입찰|위탁|제안서|사업자|수탁|협상|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행)/i;
+  /(공고|모집|공개\s*모집|모집\s*공고|용역|입찰|재입찰|재공고|위탁|민간위탁|제안서|제안요청서|평가위원|사업자|사업자\s*모집|수탁|수탁기관|운영기관|수행기관|협상|협상에\s*의한\s*계약|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행|안전점검|지정\s*공고|제출|나라장터)/i;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -402,8 +402,14 @@ function filterItemsByTitleRules(items, source) {
   return items.filter((item) => {
     const text = cleanText(item.text || '');
     if (!text) return false;
-    if (excludeRegex && excludeRegex.test(text)) return false;
-    if (includeRegex && includeRegex.test(text)) return true;
+
+    const includeMatched = includeRegex && includeRegex.test(text);
+    const relaxedMatched = RELAXED_STARTUP_INCLUDE_REGEX.test(text);
+    const excludeMatched = excludeRegex && excludeRegex.test(text);
+
+    if (excludeMatched) return false;
+    if (includeMatched) return true;
+    if (relaxedMatched) return true;
     return false;
   });
 }
@@ -584,14 +590,15 @@ async function collectGangseoFallbackLinks(source, options = {}) {
           if (isGenericPortalTitle(text)) continue;
 
           const includeMatched = includeRegex && includeRegex.test(text);
+          const relaxedMatched = RELAXED_STARTUP_INCLUDE_REGEX.test(text);
           const excludeMatched = excludeRegex && excludeRegex.test(text);
 
           if (startupBackfill) {
-            if (!includeMatched && excludeMatched) continue;
-            if (!includeMatched) continue;
+            if (!includeMatched && !relaxedMatched && excludeMatched) continue;
+            if (!includeMatched && !relaxedMatched) continue;
           } else {
             if (excludeMatched) continue;
-            if (includeRegex && !includeMatched) continue;
+            if (includeRegex && !includeMatched && !relaxedMatched) continue;
           }
 
           if (!seen.has(href)) {
@@ -896,13 +903,15 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
   const titleText = cleanText(title);
   const body = cleanText(bodyText);
   const includeMatched = includeRegex && (includeRegex.test(titleText) || includeRegex.test(body));
+  const relaxedMatched =
+    RELAXED_STARTUP_INCLUDE_REGEX.test(titleText) || RELAXED_STARTUP_INCLUDE_REGEX.test(body);
   const excludeMatched = excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body));
 
-  if (startupBackfill && includeMatched) {
+  if (startupBackfill && (includeMatched || relaxedMatched)) {
     return { keep: true, reason: 'startup-include-match', titleText, bodyText: body };
   }
 
-  if (scheduledRegular && includeMatched) {
+  if (scheduledRegular && (includeMatched || relaxedMatched)) {
     return { keep: true, reason: 'scheduled-include-match', titleText, bodyText: body };
   }
 
@@ -910,7 +919,7 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
     return { keep: false, reason: 'exclude', titleText, bodyText: body };
   }
 
-  if (includeMatched) {
+  if (includeMatched || relaxedMatched) {
     return { keep: true, reason: 'match', titleText, bodyText: body };
   }
 
