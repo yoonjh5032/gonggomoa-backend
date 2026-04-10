@@ -85,6 +85,17 @@ function toCollectorLogItem(row) {
   };
 }
 
+function toInquiryItem(row) {
+  const item = row.toJSON ? row.toJSON() : row;
+  return {
+    ...item,
+    adminMemo: item.adminMemo || '',
+    processedAt: item.processedAt || null,
+    processedBy: item.processedBy || null,
+    messagePreview: String(item.message || '').replace(/\s+/g, ' ').slice(0, 120)
+  };
+}
+
 function parseDateBoundary(value, endOfDay = false) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -267,7 +278,19 @@ router.get('/dashboard', async (req, res) => {
       Inquiry.findAll({
         order: [['createdAt', 'DESC']],
         limit: 5,
-        attributes: ['id', 'name', 'email', 'title', 'category', 'status', 'createdAt', 'message']
+        attributes: [
+          'id',
+          'name',
+          'email',
+          'title',
+          'category',
+          'status',
+          'createdAt',
+          'message',
+          'adminMemo',
+          'processedAt',
+          'processedBy'
+        ]
       }),
       CollectorRunLog.findAll({
         order: [['createdAt', 'DESC']],
@@ -341,13 +364,7 @@ router.get('/dashboard', async (req, res) => {
       },
       recentCollectorLogs: recentCollectorLogs.map(toCollectorLogItem),
       recentUsers: recentUsers.map(user => toUserListItem(user)),
-      recentInquiries: recentInquiries.map(item => {
-        const row = item.toJSON();
-        return {
-          ...row,
-          messagePreview: String(row.message || '').replace(/\s+/g, ' ').slice(0, 100)
-        };
-      })
+      recentInquiries: recentInquiries.map(item => toInquiryItem(item))
     });
   } catch (err) {
     console.error('[ADMIN_DASHBOARD]', err);
@@ -664,7 +681,8 @@ router.get('/inquiries', async (req, res) => {
         { phone: { [Op.like]: `%${q}%` } },
         { title: { [Op.like]: `%${q}%` } },
         { message: { [Op.like]: `%${q}%` } },
-        { category: { [Op.like]: `%${q}%` } }
+        { category: { [Op.like]: `%${q}%` } },
+        { adminMemo: { [Op.like]: `%${q}%` } }
       ];
     }
 
@@ -693,10 +711,9 @@ router.get('/inquiries', async (req, res) => {
     }
 
     const data = result.rows.map(row => {
-      const item = row.toJSON();
+      const item = toInquiryItem(row);
       return {
         ...item,
-        messagePreview: (item.message || '').replace(/\s+/g, ' ').slice(0, 120),
         user: item.user_id ? (userMap.get(item.user_id) || null) : null
       };
     });
@@ -720,6 +737,106 @@ router.get('/inquiries', async (req, res) => {
   } catch (err) {
     console.error('[ADMIN_INQUIRIES]', err);
     res.status(500).json({ error: '문의 목록을 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+/* ─────────────────────────────
+   GET /api/admin/inquiries/:id
+───────────────────────────── */
+router.get('/inquiries/:id', async (req, res) => {
+  try {
+    const inquiry = await Inquiry.findByPk(req.params.id);
+
+    if (!inquiry) {
+      return res.status(404).json({ error: '문의를 찾을 수 없습니다.' });
+    }
+
+    let user = null;
+    let processedByUser = null;
+
+    if (inquiry.user_id) {
+      const userRow = await User.findByPk(inquiry.user_id, {
+        attributes: ['id', 'email', 'nickname', 'company', 'phone', 'role']
+      });
+      user = userRow ? userRow.toJSON() : null;
+    }
+
+    if (inquiry.processedBy) {
+      const adminRow = await User.findByPk(inquiry.processedBy, {
+        attributes: ['id', 'email', 'nickname', 'role']
+      });
+      processedByUser = adminRow ? adminRow.toJSON() : null;
+    }
+
+    res.json({
+      inquiry: {
+        ...toInquiryItem(inquiry),
+        user,
+        processedByUser
+      }
+    });
+  } catch (err) {
+    console.error('[ADMIN_INQUIRY_DETAIL]', err);
+    res.status(500).json({ error: '문의 상세를 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+/* ─────────────────────────────
+   PATCH /api/admin/inquiries/:id
+───────────────────────────── */
+router.patch('/inquiries/:id', async (req, res) => {
+  try {
+    const inquiry = await Inquiry.findByPk(req.params.id);
+
+    if (!inquiry) {
+      return res.status(404).json({ error: '문의를 찾을 수 없습니다.' });
+    }
+
+    const {
+      status,
+      adminMemo
+    } = req.body || {};
+
+    if (status !== undefined) {
+      const nextStatus = String(status || '').trim();
+      if (!['received', 'in_progress', 'done'].includes(nextStatus)) {
+        return res.status(400).json({ error: '유효하지 않은 상태값입니다.' });
+      }
+      inquiry.status = nextStatus;
+
+      if (nextStatus === 'done') {
+        inquiry.processedAt = new Date();
+        inquiry.processedBy = req.userId || inquiry.processedBy || null;
+      } else if (nextStatus === 'received') {
+        inquiry.processedAt = null;
+        inquiry.processedBy = null;
+      }
+    }
+
+    if (adminMemo !== undefined) {
+      inquiry.adminMemo = String(adminMemo || '').trim();
+    }
+
+    await inquiry.save();
+
+    let processedByUser = null;
+    if (inquiry.processedBy) {
+      const adminRow = await User.findByPk(inquiry.processedBy, {
+        attributes: ['id', 'email', 'nickname', 'role']
+      });
+      processedByUser = adminRow ? adminRow.toJSON() : null;
+    }
+
+    res.json({
+      message: '문의 상태가 저장되었습니다.',
+      inquiry: {
+        ...toInquiryItem(inquiry),
+        processedByUser
+      }
+    });
+  } catch (err) {
+    console.error('[ADMIN_INQUIRY_UPDATE]', err);
+    res.status(500).json({ error: '문의 상태 저장 중 오류가 발생했습니다.' });
   }
 });
 

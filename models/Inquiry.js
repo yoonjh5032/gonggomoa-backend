@@ -53,13 +53,30 @@ const Inquiry = sequelize.define('Inquiry', {
     type: DataTypes.ENUM('received', 'in_progress', 'done'),
     allowNull: false,
     defaultValue: 'received'
+  },
+  adminMemo: {
+    type: DataTypes.TEXT,
+    allowNull: false,
+    defaultValue: ''
+  },
+  processedAt: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    defaultValue: null
+  },
+  processedBy: {
+    type: DataTypes.INTEGER.UNSIGNED,
+    allowNull: true,
+    defaultValue: null
   }
 }, {
   tableName: 'inquiries',
   indexes: [
     { fields: ['status'] },
     { fields: ['email'] },
-    { fields: ['createdAt'] }
+    { fields: ['createdAt'] },
+    { fields: ['processedAt'] },
+    { fields: ['processedBy'] }
   ]
 });
 
