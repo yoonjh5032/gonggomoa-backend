@@ -85,8 +85,14 @@ function absoluteUrl(url, baseUrl) {
   const raw = decodeHtml(url).trim();
   if (!raw) return '';
 
+  if (/^(javascript:|#|about:blank$)/i.test(raw)) {
+    return '';
+  }
+
   try {
-    return new URL(raw, baseUrl).toString();
+    const resolved = new URL(raw, baseUrl).toString();
+    if (/^javascript:/i.test(resolved)) return '';
+    return resolved;
   } catch (_) {
     return '';
   }
