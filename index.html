@@ -1,0 +1,1394 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="apple-touch-icon" href="/favicon.png">
+  <title>공고모아 - 입찰공고 통합 검색</title>
+  <meta name="description" content="나라장터, 서울시, 지자체 입찰공고를 한 곳에서 검색하세요.">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/public.css">
+  <style>
+    /* ════════════════════════════════════
+       페이지 뷰 전환 (홈 ↔ 캘린더)
+    ════════════════════════════════════ */
+    .page-view { display: none; }
+    .page-view.active { display: block; }
+
+    /* ── 네비 활성 강조 ── */
+    .pub-nav-link.nav-active {
+      background: rgba(255,255,255,.28);
+      color: #fff;
+      font-weight: 700;
+    }
+    .section-block {
+      margin-top: 40px;
+    }
+    .section-block:first-child {
+      margin-top: 0;
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 16px;
+      flex-wrap: nowrap;
+    }
+    .section-title {
+      margin: 0;
+      min-width: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .section-more {
+      margin-left: auto;
+      white-space: nowrap;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    @media (max-width: 768px) {
+      .section-header {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .section-block:first-child {
+        margin-top: 0;
+      }
+     .section-header {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .section-more {
+        margin-left: 0;
+      }
+    }
+
+    /* ════════════════════════════════════
+       유형별 공고
+    ════════════════════════════════════ */
+    .type-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+    }
+    .type-card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      padding: 24px 16px;
+      text-align: center;
+      text-decoration: none;
+      transition: transform .2s, box-shadow .2s;
+      cursor: pointer;
+    }
+    .type-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 24px rgba(0,0,0,.1);
+    }
+    .type-card .type-icon {
+      width: 56px;
+      height: 56px;
+      border-radius: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.6rem;
+      margin: 0 auto 12px;
+    }
+    .type-card .type-name {
+      font-size: .95rem;
+      font-weight: 700;
+      color: #111827;
+    }
+    .type-card .type-cnt {
+      font-size: .8rem;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+    .type-card.t-공사 .type-icon { background: #fef3c7; color: #d97706; }
+    .type-card.t-용역 .type-icon { background: #dbeafe; color: #1d4ed8; }
+    .type-card.t-물품 .type-icon { background: #d1fae5; color: #059669; }
+    .type-card.t-외자 .type-icon { background: #fce7f3; color: #db2777; }
+
+    /* ════════════════════════════════════
+       캘린더 뷰
+    ════════════════════════════════════ */
+    .cal-page {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 60px;
+    }
+    .cal-page-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .cal-page-title {
+      font-size: 1.15rem;
+      font-weight: 800;
+      color: #111827;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .cal-page-title i { color: #1e40af; }
+
+    .cal-layout {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 24px;
+      align-items: start;
+    }
+    @media (max-width: 900px) {
+      .cal-layout { grid-template-columns: 1fr; }
+    }
+
+    .cal-card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 2px 12px rgba(0,0,0,.06);
+    }
+    .cal-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 24px 14px;
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .cal-nav-month {
+      font-size: 1.1rem;
+      font-weight: 800;
+      color: #1e40af;
+    }
+    .cal-nav-btn {
+      background: none;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 7px 14px;
+      cursor: pointer;
+      font-size: .9rem;
+      color: #374151;
+      transition: background .15s, border-color .15s;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .cal-nav-btn:hover {
+      background: #eff6ff;
+      border-color: #93c5fd;
+      color: #1e40af;
+    }
+
+    .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      border-bottom: 1px solid #f3f4f6;
+    }
+    .cal-dow {
+      text-align: center;
+      font-size: .72rem;
+      font-weight: 700;
+      color: #9ca3af;
+      padding: 10px 0;
+      background: #f9fafb;
+    }
+    .cal-dow.sun { color: #ef4444; }
+    .cal-dow.sat { color: #3b82f6; }
+
+    .cal-days {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      padding: 8px;
+      gap: 4px;
+    }
+    .cal-day {
+      min-height: 76px;
+      border-radius: 10px;
+      padding: 6px 7px;
+      cursor: pointer;
+      transition: background .15s;
+      position: relative;
+      overflow: hidden;
+    }
+    .cal-day:hover:not(.cal-empty) { background: #eff6ff; }
+    .cal-day.cal-selected {
+      background: #dbeafe !important;
+      outline: 2px solid #3b82f6;
+    }
+    .cal-day.cal-today { background: #fef9c3; }
+    .cal-day.cal-today .cal-day-num {
+      color: #d97706;
+      font-weight: 800;
+    }
+    .cal-day.cal-empty { cursor: default; }
+
+    .cal-day-num {
+      font-size: .78rem;
+      font-weight: 600;
+      color: #374151;
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+    .cal-day.sun-col .cal-day-num { color: #ef4444; }
+    .cal-day.sat-col .cal-day-num { color: #3b82f6; }
+
+    .cal-day-events {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .cal-event-chip {
+      font-size: .62rem;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.5;
+    }
+    .cal-event-chip.g2b      { background: #dbeafe; color: #1d4ed8; }
+    .cal-event-chip.seoul    { background: #d1fae5; color: #065f46; }
+    .cal-event-chip.contract { background: #ffedd5; color: #9a3412; }
+    .cal-more-badge {
+      font-size: .62rem;
+      color: #6b7280;
+      font-weight: 600;
+      padding: 1px 4px;
+    }
+
+    .cal-detail-panel {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 2px 12px rgba(0,0,0,.06);
+      position: sticky;
+      top: 74px;
+    }
+    .cal-detail-head {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid #f3f4f6;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .cal-detail-date-label {
+      font-size: .95rem;
+      font-weight: 700;
+      color: #1e40af;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .cal-detail-count {
+      background: #dbeafe;
+      color: #1d4ed8;
+      font-size: .72rem;
+      font-weight: 700;
+      padding: 2px 9px;
+      border-radius: 20px;
+    }
+    .cal-detail-body {
+      padding: 12px 16px 16px;
+      max-height: 520px;
+      overflow-y: auto;
+    }
+    .cal-detail-body::-webkit-scrollbar { width: 4px; }
+    .cal-detail-body::-webkit-scrollbar-thumb {
+      background: #d1d5db;
+      border-radius: 2px;
+    }
+
+    .cal-notice-row {
+      padding: 11px 13px;
+      border-radius: 10px;
+      border: 1px solid #f3f4f6;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color .15s, background .15s;
+    }
+    .cal-notice-row:hover {
+      border-color: #93c5fd;
+      background: #f8fbff;
+    }
+    .cal-notice-row:last-child { margin-bottom: 0; }
+    .cal-notice-row-top {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 5px;
+      flex-wrap: wrap;
+    }
+    .cal-src-tag {
+      font-size: .68rem;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 20px;
+      white-space: nowrap;
+    }
+    .cal-src-tag.g2b_api        { background: #dbeafe; color: #1d4ed8; }
+    .cal-src-tag.seoul_board    { background: #d1fae5; color: #065f46; }
+    .cal-src-tag.seoul_contract { background: #ffedd5; color: #9a3412; }
+    .cal-notice-type {
+      font-size: .68rem;
+      color: #6b7280;
+      background: #f3f4f6;
+      padding: 2px 7px;
+      border-radius: 20px;
+    }
+    .cal-notice-title {
+      font-size: .83rem;
+      font-weight: 600;
+      color: #111827;
+      line-height: 1.4;
+      margin-bottom: 4px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .cal-notice-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: .73rem;
+      color: #9ca3af;
+      flex-wrap: wrap;
+    }
+    .cal-notice-meta i { font-size: .7rem; }
+
+    .cal-today-badge {
+      position: absolute;
+      top: 4px;
+      right: 5px;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #f59e0b;
+    }
+
+    .cal-day.cal-deadline-today {
+      background: #fff7ed !important;
+      outline: 2px solid #fb923c;
+    }
+    .cal-day.cal-deadline-today .cal-day-num {
+      color: #ea580c;
+      font-weight: 800;
+    }
+
+    .cal-day.cal-deadline-soon {
+      background: #fef2f2 !important;
+    }
+    .cal-day.cal-deadline-soon .cal-day-num {
+      color: #dc2626;
+      font-weight: 700;
+    }
+
+    .cal-dday-badge {
+      position: absolute;
+      bottom: 4px;
+      right: 5px;
+      font-size: .56rem;
+      font-weight: 800;
+      line-height: 1;
+      padding: 2px 4px;
+      border-radius: 4px;
+      background: #dc2626;
+      color: #fff;
+    }
+    .cal-dday-badge.today { background: #ea580c; }
+
+    .cal-event-chip .chip-cnt { font-weight: 800; opacity: .85; }
+
+    .cal-close-time {
+      font-size: .72rem;
+      color: #ea580c;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .cal-dday-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: .72rem;
+      font-weight: 800;
+      padding: 2px 8px;
+      border-radius: 20px;
+      margin-left: 4px;
+    }
+    .cal-dday-label.d0 { background: #ffedd5; color: #c2410c; }
+    .cal-dday-label.d1 { background: #fef2f2; color: #dc2626; }
+    .cal-dday-label.d3 { background: #fef9c3; color: #b45309; }
+    .cal-dday-label.dn { background: #f3f4f6; color: #6b7280; }
+
+    .cal-month-summary {
+      padding: 10px 16px;
+      border-top: 1px solid #f3f4f6;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: .76rem;
+      color: #6b7280;
+      background: #fafafa;
+      flex-wrap: wrap;
+    }
+    .cal-summary-chip {
+      padding: 2px 9px;
+      border-radius: 20px;
+      font-size: .72rem;
+      font-weight: 600;
+    }
+    .cal-summary-chip.urgent { background: #fef2f2; color: #dc2626; }
+    .cal-summary-chip.total  { background: #eff6ff; color: #1d4ed8; }
+
+    .cal-empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: #9ca3af;
+    }
+    .cal-empty-state i {
+      font-size: 2rem;
+      display: block;
+      margin-bottom: 10px;
+      color: #d1d5db;
+    }
+    .cal-empty-state p { font-size: .85rem; }
+
+    @media (max-width: 640px) {
+      .type-grid { grid-template-columns: repeat(2, 1fr); }
+      .cal-day { min-height: 54px; }
+      .cal-event-chip { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── HEADER ── -->
+<header class="pub-header">
+  <div class="pub-header-inner">
+    <a href="/" class="pub-logo" aria-label="공고모아 홈으로 이동">
+      <img src="/assets/gonggomoa-logo.png" alt="공고모아" class="pub-logo-image" onerror="this.onerror=null;this.src='/favicon.png';this.classList.add('pub-logo-image-fallback');">
+    </a>
+    <nav class="pub-nav">
+      <a href="#" class="pub-nav-link nav-active" id="nav-home-btn" onclick="showView('home');return false;">
+        <i class="fas fa-house"></i> 홈
+      </a>
+      <a href="#" class="pub-nav-link" id="nav-cal-btn" onclick="showView('calendar');return false;">
+        <i class="fas fa-calendar-days"></i> 캘린더
+      </a>
+      <a href="/notices" class="pub-nav-link">
+        <i class="fas fa-list-ul"></i> 전체보기
+      </a>
+    </nav>
+    <div class="pub-header-right">
+      <div class="header-guest-group" id="header-guest-group">
+        <a href="/login" class="pub-btn-login" id="header-login-btn">
+          <i class="fas fa-right-to-bracket"></i> 로그인
+        </a>
+        <a href="/login?tab=register" class="pub-btn-register" id="header-register-btn">
+          <i class="fas fa-user-plus"></i> 회원가입
+        </a>
+      </div>
+
+      <div class="header-user-group" id="header-user-group" style="display:none">
+        <div class="header-user-name">
+          <i class="fas fa-user-circle"></i>
+          <span id="header-nickname">닉네임</span>
+        </div>
+        <a href="/mypage" class="pub-btn-mypage" id="header-mypage-btn">
+          <i class="fas fa-id-card"></i> 마이페이지
+        </a>
+        <button class="pub-btn-logout" id="header-logout-btn" onclick="PublicAuth.logout()">
+          <i class="fas fa-right-from-bracket"></i> 로그아웃
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ── HERO ── -->
+<section class="hero" id="hero-section">
+  <div class="hero-inner">
+    <div class="hero-badge"><i class="fas fa-bolt"></i> 실시간 입찰공고 통합 수집</div>
+    <h1 class="hero-title">흩어진 공고를<br><span class="hero-highlight">한눈에</span> 모아보세요</h1>
+    <p class="hero-desc">공사·용역·물품 공고를 금액·마감일·기관별로 빠르게 검색하세요</p>
+    <div class="hero-search-wrap">
+      <div class="hero-search">
+        <i class="fas fa-search hero-search-icon"></i>
+        <input type="text" id="hero-search-input" placeholder="공고명, 기관명으로 검색..." autocomplete="off">
+        <button onclick="heroSearch()">검색</button>
+      </div>
+      <div class="hero-search-tags">
+        <span onclick="goSearch('서버')">서버</span>
+        <span onclick="goSearch('보안관제')">보안관제</span>
+        <span onclick="goSearch('클라우드')">클라우드</span>
+        <span onclick="goSearch('네트워크')">네트워크</span>
+        <span onclick="goSearch('유지보수')">유지보수</span>
+        <span onclick="goSearch('용역')">용역</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── 소스 통계 바 ── -->
+<div class="source-bar" id="source-bar-section">
+  <div class="source-bar-inner">
+    <a href="/notices?source=g2b_api" class="src-chip src-g2b">
+      <i class="fas fa-database"></i> 나라장터
+      <span class="src-chip-count" id="src-count-g2b">-</span>
+    </a>
+    <a href="/notices?source=seoul_board" class="src-chip src-seoul">
+      <i class="fas fa-city"></i> 서울시
+      <span class="src-chip-count" id="src-count-seoul">-</span>
+    </a>
+    <a href="/notices?source=seoul_contract" class="src-chip src-contract">
+      <i class="fas fa-file-contract"></i> 계약마당
+      <span class="src-chip-count" id="src-count-contract">-</span>
+    </a>
+    <div class="src-chip src-total">
+      <i class="fas fa-layer-group"></i> 전체
+      <span class="src-chip-count" id="src-count-total">-</span>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════
+     홈 뷰
+═════════════════════════════════════════════════ -->
+<div id="view-home" class="page-view active">
+  <main class="pub-main">
+
+    <!-- 유형별 공고 -->
+    <section class="section-block">
+      <div class="section-header">
+        <h2 class="section-title"><i class="fas fa-tags" style="color:#8b5cf6"></i> 유형별 공고</h2>
+      </div>
+      <div class="type-grid">
+        <a href="/notices?type=공사" class="type-card t-공사">
+          <div class="type-icon"><i class="fas fa-hard-hat"></i></div>
+          <div class="type-name">공사</div>
+          <div class="type-cnt" id="cnt-공사">-</div>
+        </a>
+        <a href="/notices?type=용역" class="type-card t-용역">
+          <div class="type-icon"><i class="fas fa-handshake"></i></div>
+          <div class="type-name">용역</div>
+          <div class="type-cnt" id="cnt-용역">-</div>
+        </a>
+        <a href="/notices?type=물품" class="type-card t-물품">
+          <div class="type-icon"><i class="fas fa-box"></i></div>
+          <div class="type-name">물품</div>
+          <div class="type-cnt" id="cnt-물품">-</div>
+        </a>
+        <a href="/notices?type=외자" class="type-card t-외자">
+          <div class="type-icon"><i class="fas fa-globe"></i></div>
+          <div class="type-name">외자</div>
+          <div class="type-cnt" id="cnt-외자">-</div>
+        </a>
+      </div>
+    </section>
+
+    <!-- 메인 광고 배너 -->
+    <section class="home-ad-section">
+      <a
+        href="https://www.edisonenc.com/"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="home-ad-banner"
+        aria-label="에디슨이앤씨 자세히 보기"
+      >
+        <img
+          src="/assets/edison-banner-main.png"
+          alt="도로 결빙 대응, 자동제어로 더 안전하게 - 에디슨이앤씨 배너"
+          class="home-ad-banner-image"
+        >
+      </a>
+    </section>
+
+    <!-- 관심 키워드 공고 -->
+    <section class="section-block" id="interest-keyword-section" style="display:none">
+      <div class="section-header">
+        <h2 class="section-title">
+          <i class="fas fa-star" style="color:#f59e0b"></i>
+          관심 키워드 공고
+          <span class="section-badge" id="interest-keyword-badge" style="display:none;background:#fff7ed;color:#c2410c"></span>
+        </h2>
+        <a href="/notices?interest=1" class="section-more">전체보기 <i class="fas fa-arrow-right"></i></a>
+      </div>
+
+      <div id="interest-keyword-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px"></div>
+
+      <div class="card-grid" id="interest-keyword-notices">
+        <div class="card-skeleton"></div>
+        <div class="card-skeleton"></div>
+        <div class="card-skeleton"></div>
+      </div>
+    </section>
+
+    <!-- 마감 임박 -->
+    <section class="section-block">
+      <div class="section-header">
+        <h2 class="section-title"><i class="fas fa-fire" style="color:#ef4444"></i> 마감 임박 공고 <span class="section-badge">D-3</span></h2>
+        <a href="/notices?deadline=3" class="section-more">전체보기 <i class="fas fa-arrow-right"></i></a>
+      </div>
+      <div class="card-grid" id="closing-notices">
+        <div class="card-skeleton"></div>
+        <div class="card-skeleton"></div>
+        <div class="card-skeleton"></div>
+      </div>
+    </section>
+
+    <!-- 최신 공고 -->
+    <section class="section-block">
+      <div class="section-header">
+        <h2 class="section-title"><i class="fas fa-calendar-plus" style="color:#3b82f6"></i> 최신 공고</h2>
+        <a href="/notices" class="section-more">전체보기 <i class="fas fa-arrow-right"></i></a>
+      </div>
+      <div class="src-tab-bar">
+        <button class="src-tab active" data-src="">전체</button>
+        <button class="src-tab" data-src="g2b_api">나라장터</button>
+        <button class="src-tab" data-src="seoul_board">서울시</button>
+        <button class="src-tab" data-src="seoul_contract">계약마당</button>
+      </div>
+      <div class="card-grid" id="latest-notices">
+        <div class="card-skeleton"></div><div class="card-skeleton"></div>
+        <div class="card-skeleton"></div><div class="card-skeleton"></div>
+        <div class="card-skeleton"></div><div class="card-skeleton"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ════════════════════════════════════════════════
+     캘린더 뷰
+═════════════════════════════════════════════════ -->
+<div id="view-calendar" class="page-view">
+  <div class="cal-page">
+    <div class="cal-page-header">
+      <h2 class="cal-page-title">
+        <i class="fas fa-calendar-xmark"></i> 입찰공고 마감 캘린더
+      </h2>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <span style="display:flex;align-items:center;gap:5px;font-size:.75rem;color:#6b7280">
+          <span style="width:10px;height:10px;border-radius:3px;background:#dbeafe;display:inline-block"></span>나라장터
+        </span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:.75rem;color:#6b7280">
+          <span style="width:10px;height:10px;border-radius:3px;background:#d1fae5;display:inline-block"></span>서울시
+        </span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:.75rem;color:#6b7280">
+          <span style="width:10px;height:10px;border-radius:3px;background:#ffedd5;display:inline-block"></span>계약마당
+        </span>
+        <span style="width:1px;height:14px;background:#e5e7eb;display:inline-block"></span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:.75rem;color:#6b7280">
+          <span style="width:10px;height:10px;border-radius:3px;background:#fef2f2;border:1.5px solid #fca5a5;display:inline-block"></span>마감 임박(D-3)
+        </span>
+        <span style="display:flex;align-items:center;gap:5px;font-size:.75rem;color:#6b7280">
+          <span style="width:10px;height:10px;border-radius:3px;background:#fff7ed;border:1.5px solid #fb923c;display:inline-block"></span>마감 당일
+        </span>
+      </div>
+    </div>
+
+    <div class="cal-layout">
+      <div class="cal-card">
+        <div class="cal-nav">
+          <button class="cal-nav-btn" onclick="calMove(-1)">
+            <i class="fas fa-chevron-left"></i> 이전
+          </button>
+          <span class="cal-nav-month" id="cal-month-label"></span>
+          <button class="cal-nav-btn" onclick="calMove(1)">
+            다음 <i class="fas fa-chevron-right"></i>
+          </button>
+        </div>
+        <div class="cal-grid" id="cal-dow-row"></div>
+        <div class="cal-days" id="cal-days-grid"></div>
+        <div class="cal-month-summary" id="cal-month-summary" style="display:none">
+          <span>이번 달 마감 공고</span>
+          <span class="cal-summary-chip total" id="cal-summary-total">0건</span>
+          <span>마감 임박(D-3 이내)</span>
+          <span class="cal-summary-chip urgent" id="cal-summary-urgent">0건</span>
+        </div>
+      </div>
+
+      <div class="cal-detail-panel">
+        <div class="cal-detail-head">
+          <div class="cal-detail-date-label" id="cal-detail-date">
+            <i class="fas fa-calendar-xmark"></i>
+            <span id="cal-detail-date-text">마감일을 선택하세요</span>
+          </div>
+          <span class="cal-detail-count" id="cal-detail-count" style="display:none">0건</span>
+        </div>
+        <div class="cal-detail-body" id="cal-detail-body">
+          <div class="cal-empty-state">
+            <i class="fas fa-calendar-xmark" style="color:#fca5a5"></i>
+            <p style="font-size:.82rem">마감일을 클릭하면<br>해당 일 마감 공고를 볼 수 있습니다</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── FOOTER ── -->
+<footer class="pub-footer">
+  <div class="pub-footer-inner">
+    <div class="footer-logo"><i class="fas fa-building-columns"></i> 공고모아</div>
+    <p class="footer-desc">나라장터·서울시·지자체 입찰공고 통합 검색 서비스</p>
+    <p class="footer-copy">데이터 출처: 공공데이터포털 조달청_나라장터, 서울특별시</p>
+  </div>
+</footer>
+
+<!-- 문의하기 플로팅 버튼 -->
+<button class="inquiry-float-btn" id="inquiry-float-btn" aria-label="문의하기">
+  <i class="fas fa-comment-dots"></i>
+  <span>문의하기</span>
+</button>
+
+<!-- 문의하기 모달 -->
+<div id="inquiry-modal" class="inquiry-modal">
+  <div class="inquiry-modal-backdrop"></div>
+
+  <div class="inquiry-modal-dialog">
+    <div class="inquiry-modal-header">
+      <div class="inquiry-modal-title-wrap">
+        <h2 class="inquiry-modal-title">문의하기</h2>
+        <p class="inquiry-modal-desc">서비스 문의, 광고 문의, 오류 제보를 남겨주세요.</p>
+      </div>
+      <button type="button" class="inquiry-modal-close" aria-label="닫기">×</button>
+    </div>
+
+    <form id="inquiry-form" class="inquiry-form">
+      <div class="inquiry-form-row">
+        <label class="inquiry-form-label" for="inquiry-category">문의 유형</label>
+        <select id="inquiry-category" class="inquiry-form-select">
+          <option value="general">일반문의</option>
+          <option value="service">서비스 문의</option>
+          <option value="advertisement">광고 문의</option>
+          <option value="bug">오류 제보</option>
+          <option value="partnership">제휴 문의</option>
+          <option value="other">기타</option>
+        </select>
+      </div>
+
+      <div class="inquiry-form-row">
+        <label class="inquiry-form-label" for="inquiry-name">이름</label>
+        <input id="inquiry-name" type="text" class="inquiry-form-control" placeholder="이름을 입력하세요">
+      </div>
+
+      <div class="inquiry-form-row">
+        <label class="inquiry-form-label" for="inquiry-email">이메일</label>
+        <input id="inquiry-email" type="email" class="inquiry-form-control" placeholder="example@email.com">
+      </div>
+
+      <div class="inquiry-form-row">
+        <label class="inquiry-form-label" for="inquiry-phone">연락처</label>
+        <input id="inquiry-phone" type="text" class="inquiry-form-control" placeholder="010-0000-0000 (선택)">
+      </div>
+
+      <div class="inquiry-form-row">
+        <label class="inquiry-form-label" for="inquiry-title">제목</label>
+        <input id="inquiry-title" type="text" class="inquiry-form-control" placeholder="문의 제목을 입력하세요">
+      </div>
+
+      <div class="inquiry-form-row">
+        <label class="inquiry-form-label" for="inquiry-message">문의 내용</label>
+        <textarea id="inquiry-message" class="inquiry-form-textarea" placeholder="문의하실 내용을 입력해주세요."></textarea>
+      </div>
+
+      <div class="inquiry-agree">
+        <input id="inquiry-agree" type="checkbox">
+        <label for="inquiry-agree">개인정보 수집 및 문의 응대 목적의 이용에 동의합니다.</label>
+      </div>
+
+      <div class="inquiry-form-actions">
+        <button type="button" class="inquiry-btn inquiry-btn-cancel">취소</button>
+        <button type="submit" class="inquiry-btn inquiry-btn-submit">문의 접수</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script src="js/public-auth.js"></script>
+<script src="js/feedback.js"></script>
+<script src="js/public-api.js"></script>
+<script src="js/pageview-tracker.js"></script>
+<script src="js/inquiry-popup.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  function esc(s) {
+    return (s||'')
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+
+  function srcLabel(src) {
+    return {
+      g2b_api:'나라장터',
+      seoul_board:'서울시',
+      seoul_contract:'계약마당'
+    }[src] || src;
+  }
+
+  function normalizeKeywords(list) {
+  if (typeof list === 'string') {
+    try {
+      var parsed = JSON.parse(list);
+      list = Array.isArray(parsed) ? parsed : String(list).split(',');
+    } catch (e) {
+      list = String(list).split(',');
+    }
+  }
+
+  if (!Array.isArray(list)) list = [];
+
+  return list
+    .map(function(v){ return String(v || '').trim(); })
+    .filter(Boolean)
+    .filter(function(v, i, arr){ return arr.indexOf(v) === i; })
+    .slice(0, 10);
+}
+
+
+  function formatKstDate(dateStr){
+    if(!dateStr) return '';
+    var date = new Date(dateStr);
+    if(isNaN(date)) return '';
+    var parts = new Intl.DateTimeFormat('ko-KR', {
+      timeZone:'Asia/Seoul',
+      year:'numeric',
+      month:'2-digit',
+      day:'2-digit'
+    }).formatToParts(date);
+    var y='', m='', d='';
+    parts.forEach(function(p){
+      if(p.type === 'year') y = p.value;
+      if(p.type === 'month') m = p.value;
+      if(p.type === 'day') d = p.value;
+    });
+    return y + '-' + m + '-' + d;
+  }
+
+  function formatKstTime(dateStr){
+    if(!dateStr) return '';
+    var date = new Date(dateStr);
+    if(isNaN(date)) return '';
+    var parts = new Intl.DateTimeFormat('ko-KR', {
+      timeZone:'Asia/Seoul',
+      hour:'2-digit',
+      minute:'2-digit',
+      hour12:false
+    }).formatToParts(date);
+    var h='', m='';
+    parts.forEach(function(p){
+      if(p.type === 'hour') h = p.value;
+      if(p.type === 'minute') m = p.value;
+    });
+    return h + ':' + m;
+  }
+
+  function getKstTodayYmd() {
+    return formatKstDate(new Date().toISOString());
+  }
+
+  function daysLeftHtml(closingAt) {
+    if (!closingAt) return '';
+    var d = Math.ceil((new Date(closingAt).getTime() - Date.now()) / 86400000);
+    if (d < 0) return '<span class="days-badge" style="background:#9ca3af">마감</span>';
+    return '<span class="days-badge ' + (d <= 3 ? 'days-urgent' : '') + '">D-' + d + '</span>';
+  }
+
+  function escAttr(s) {
+    return String(s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function renderCard(n, urgent) {
+    var src = n.source_system || '';
+    var close = n.closing_at ? formatKstDate(n.closing_at) : '';
+    var budget = n.budget_formatted ? '<span class="card-budget">' + esc(n.budget_formatted) + '</span>' : '';
+    var dateHtml = close ? '<span class="card-date"><i class="fas fa-calendar-xmark"></i> ' + close + '</span>' : '';
+
+    return '<div class="notice-card js-go-detail' + (urgent ? ' card-urgent' : '') + '" data-id="' + escAttr(n.id) + '" data-url="' + escAttr(n.detail_url || '') + '">' +
+      '<div class="card-top">' +
+        '<span class="card-src src-' + src + '">' + srcLabel(src) + '</span>' +
+        '<span class="card-type type-' + esc(n.notice_type||'') + '">' + esc(n.notice_type||'') + '</span>' +
+        daysLeftHtml(n.closing_at) +
+      '</div>' +
+      '<div class="card-title">' + esc(n.title||'') + '</div>' +
+      '<div class="card-org"><i class="fas fa-building"></i> ' + esc(n.issuing_org||'') + '</div>' +
+      '<div class="card-bottom">' + budget + dateHtml + '</div>' +
+    '</div>';
+  }
+
+  function emptyMsg(text) {
+    return '<div style="grid-column:1/-1;text-align:center;padding:36px;color:#9ca3af">' +
+      '<i class="fas fa-inbox" style="font-size:2rem;display:block;margin-bottom:8px"></i>' +
+      text +
+    '</div>';
+  }
+
+  var homeRefreshInFlight = false;
+
+  function getActiveSourceValue(){
+    var activeTab = document.querySelector('.src-tab.active');
+    return activeTab ? (activeTab.dataset.src || '') : '';
+  }
+
+  function isHomeViewActive(){
+    var hv = document.getElementById('view-home');
+    return hv ? hv.classList.contains('active') : true;
+  }
+
+  /* ── 뷰 전환 ────────────────────────────────────────────── */
+  var calInited = false;
+  window.showView = function(v) {
+    var isHome = (v === 'home');
+    document.getElementById('view-home').classList.toggle('active', isHome);
+    document.getElementById('view-calendar').classList.toggle('active', !isHome);
+    document.getElementById('hero-section').style.display = isHome ? '' : 'none';
+    document.getElementById('source-bar-section').style.display = isHome ? '' : 'none';
+    document.getElementById('nav-home-btn').classList.toggle('nav-active', isHome);
+    document.getElementById('nav-cal-btn').classList.toggle('nav-active', !isHome);
+    if (!isHome && !calInited) {
+      calInited = true;
+      initCalendar();
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  /* ── 홈 콘텐츠 ──────────────────────────────────────────── */
+  async function renderClosing() {
+    var el = document.getElementById('closing-notices');
+    try {
+      var resp = await PublicAPI.getNotices({ sortBy:'closing', daysLeft:3, limit:3 });
+      var list = resp.data || resp;
+      el.innerHTML = list.length
+        ? list.map(function(n){ return renderCard(n,true); }).join('')
+        : emptyMsg('마감 임박 공고가 없습니다');
+    } catch(e) {
+      el.innerHTML = emptyMsg('데이터를 불러올 수 없습니다');
+    }
+  }
+
+  async function renderLatest(source) {
+    var el = document.getElementById('latest-notices');
+    el.innerHTML = Array(6).fill('<div class="card-skeleton"></div>').join('');
+    try {
+      var resp = await PublicAPI.getNotices({ source:source, sortBy:'recent', limit:6 });
+      var list = resp.data || resp;
+      el.innerHTML = list.length
+        ? list.map(function(n){ return renderCard(n); }).join('')
+        : emptyMsg('공고가 없습니다');
+    } catch(e) {
+      el.innerHTML = emptyMsg('데이터를 불러올 수 없습니다');
+    }
+  }
+
+  async function renderTypeCounts() {
+    try {
+      var resp = await PublicAPI.getNotices({ limit:500 });
+      var all = resp.data || resp;
+      ['공사','용역','물품','외자'].forEach(function(t) {
+        var cnt = all.filter(function(n){ return n.notice_type === t; }).length;
+        var el = document.getElementById('cnt-' + t);
+        if (el) el.textContent = cnt + '건';
+      });
+    } catch(e) {}
+  }
+
+  async function loadStats() {
+    try {
+      var s = await PublicAPI.getStats();
+      document.getElementById('src-count-g2b').textContent      = s.g2b || 0;
+      document.getElementById('src-count-seoul').textContent    = s.seoul || 0;
+      document.getElementById('src-count-contract').textContent = s.contract || 0;
+      document.getElementById('src-count-total').textContent    = s.total || 0;
+    } catch(e) {}
+  }
+
+  function renderInterestKeywordChips(list) {
+    var wrap = document.getElementById('interest-keyword-chips');
+    if (!wrap) return;
+    wrap.innerHTML = list.map(function(kw) {
+      return '<span style="display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-size:.78rem;font-weight:700"># ' + esc(kw) + '</span>';
+    }).join('');
+  }
+
+  async function renderInterestKeywords() {
+    var section = document.getElementById('interest-keyword-section');
+    var listEl  = document.getElementById('interest-keyword-notices');
+    var badgeEl = document.getElementById('interest-keyword-badge');
+
+    if (!section || !listEl) return;
+
+    if (typeof PublicAuth === 'undefined' || !PublicAuth.isLoggedIn()) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = '';
+    listEl.innerHTML = Array(3).fill('<div class="card-skeleton"></div>').join('');
+
+    try {
+      var meResp = await PublicAuth.getMe();
+      var keywordList = normalizeKeywords(meResp && meResp.user ? meResp.user.keywords : []);
+
+      if (!keywordList.length) {
+        section.style.display = 'none';
+        return;
+      }
+
+      renderInterestKeywordChips(keywordList);
+
+      if (badgeEl) {
+        badgeEl.style.display = 'inline-flex';
+        badgeEl.textContent = keywordList.length + '개';
+      }
+
+      var resp = await PublicAPI.getNotices({
+        keywords: keywordList,
+        sortBy: 'closing',
+        limit: 6
+      });
+
+      var list = resp.data || [];
+      listEl.innerHTML = list.length
+        ? list.map(function(n){ return renderCard(n); }).join('')
+        : emptyMsg('관심 키워드와 일치하는 공고가 없습니다');
+    } catch(e) {
+      section.style.display = '';
+      listEl.innerHTML = emptyMsg('관심 키워드 공고를 불러올 수 없습니다');
+    }
+  }
+
+  async function refreshHomeSectionsSafely(){
+    if (homeRefreshInFlight) return;
+    if (document.visibilityState !== 'visible') return;
+    if (!isHomeViewActive()) return;
+
+    homeRefreshInFlight = true;
+    try{
+      var src = getActiveSourceValue();
+      await Promise.allSettled([
+        loadStats(),
+        renderClosing(),
+        renderLatest(src),
+        renderTypeCounts(),
+        renderInterestKeywords()
+      ]);
+    } finally {
+      homeRefreshInFlight = false;
+    }
+  }
+
+  /* ════════════════════════════════════════════════
+     캘린더 로직
+  ════════════════════════════════════════════════ */
+  var calYear = new Date().getFullYear();
+  var calMonth = new Date().getMonth() + 1;
+  var calData = {};
+  var calLoading = false;
+  var selectedDate = null;
+
+  function initCalendar() {
+    renderDowRow();
+    refreshCal();
+  }
+
+  function renderDowRow() {
+    var dows = [
+      { label:'일', cls:'sun' }, { label:'월', cls:'' }, { label:'화', cls:'' },
+      { label:'수', cls:'' },   { label:'목', cls:'' }, { label:'금', cls:'' },
+      { label:'토', cls:'sat' }
+    ];
+    document.getElementById('cal-dow-row').innerHTML =
+      dows.map(function(d){
+        return '<div class="cal-dow ' + d.cls + '">' + d.label + '</div>';
+      }).join('');
+  }
+
+  async function refreshCal() {
+    if (calLoading) return;
+    calLoading = true;
+
+    document.getElementById('cal-days-grid').innerHTML =
+      '<div style="grid-column:1/-1;text-align:center;padding:30px;color:#9ca3af">' +
+      '<i class="fas fa-spinner" style="animation:spin .8s linear infinite;display:inline-block"></i> 로딩 중...' +
+      '</div>';
+
+    document.getElementById('cal-month-label').textContent = calYear + '년 ' + calMonth + '월';
+
+    try {
+      calData = await PublicAPI.getNoticesByMonth(calYear, calMonth);
+    } catch(e) {
+      calData = {};
+    }
+
+    renderCalGrid();
+    calLoading = false;
+  }
+
+  function calcDday(dateStr) {
+    if (!dateStr) return null;
+    var today = new Date();
+    today.setHours(0,0,0,0);
+    var target = new Date(dateStr.slice(0,10));
+    target.setHours(0,0,0,0);
+    return Math.round((target - today) / 86400000);
+  }
+
+  function ddayLabel(diff) {
+    if (diff === null) return '';
+    if (diff === 0) return '<span class="cal-dday-label d0"><i class="fas fa-circle-exclamation"></i> D-day</span>';
+    if (diff > 0) return '<span class="cal-dday-label ' + (diff <= 3 ? 'd1' : (diff <= 7 ? 'd3' : 'dn')) + '">D-' + diff + '</span>';
+    return '<span class="cal-dday-label dn">마감</span>';
+  }
+
+  function renderCalGrid() {
+    var today = getKstTodayYmd();
+    var firstDay = new Date(calYear, calMonth - 1, 1).getDay();
+    var lastDate = new Date(calYear, calMonth, 0).getDate();
+    var srcClass = { g2b_api:'g2b', seoul_board:'seoul', seoul_contract:'contract' };
+    var srcName  = { g2b_api:'나라장터', seoul_board:'서울시', seoul_contract:'계약마당' };
+
+    var html = '';
+    var monthTotal = 0;
+    var monthUrgent = 0;
+
+    for (var i = 0; i < firstDay; i++) {
+      html += '<div class="cal-day cal-empty"></div>';
+    }
+
+    for (var d = 1; d <= lastDate; d++) {
+      var colIdx  = (firstDay + d - 1) % 7;
+      var colCls  = colIdx === 0 ? ' sun-col' : (colIdx === 6 ? ' sat-col' : '');
+      var ds      = calYear + '-' + String(calMonth).padStart(2,'0') + '-' + String(d).padStart(2,'0');
+      var notices = calData[ds] || [];
+      var diff    = calcDday(ds);
+      var isSelCls = ds === selectedDate ? ' cal-selected' : '';
+
+      var deadlineCls = '';
+      if (!isSelCls && notices.length > 0) {
+        if (diff === 0) deadlineCls = ' cal-deadline-today';
+        else if (diff > 0 && diff <= 3) deadlineCls = ' cal-deadline-soon';
+      }
+
+      var todayDot = ds === today ? '<span class="cal-today-badge"></span>' : '';
+      var ddayBadge = '';
+      if (notices.length > 0 && diff !== null && diff >= 0 && diff <= 7) {
+        ddayBadge = '<span class="cal-dday-badge' + (diff === 0 ? ' today' : '') + '">D-' + (diff === 0 ? 'day' : diff) + '</span>';
+      }
+
+      monthTotal += notices.length;
+      if (diff !== null && diff >= 0 && diff <= 3) monthUrgent += notices.length;
+
+      var chips = '';
+      var groupMap = {};
+
+      notices.forEach(function(n) {
+        var sc = srcClass[n.source_system];
+        if (!sc) return;
+        if (!groupMap[sc]) groupMap[sc] = { cls: sc, label: srcName[n.source_system], cnt: 0 };
+        groupMap[sc].cnt++;
+      });
+
+      var groups = Object.values(groupMap);
+      var shown = 0;
+      groups.forEach(function(g) {
+        if (shown < 2) {
+          chips += '<div class="cal-event-chip ' + g.cls + '">' + g.label + ' <span class="chip-cnt">' + g.cnt + '</span></div>';
+          shown++;
+        }
+      });
+      if (groups.length > 2) chips += '<div class="cal-more-badge">+' + (groups.length - 2) + '</div>';
+
+      html += '<div class="cal-day' + colCls + (ds === today ? ' cal-today' : '') + deadlineCls + isSelCls + '" onclick="selectCalDay(\'' + ds + '\')">' +
+        todayDot + ddayBadge +
+        '<div class="cal-day-num">' + d + '</div>' +
+        '<div class="cal-day-events">' + chips + '</div>' +
+      '</div>';
+    }
+
+    document.getElementById('cal-days-grid').innerHTML = html;
+
+    var sumEl = document.getElementById('cal-month-summary');
+    if (sumEl) {
+      if (monthTotal > 0) {
+        sumEl.style.display = '';
+        document.getElementById('cal-summary-total').textContent  = monthTotal + '건';
+        document.getElementById('cal-summary-urgent').textContent = monthUrgent + '건';
+      } else {
+        sumEl.style.display = 'none';
+      }
+    }
+  }
+
+  window.calMove = async function(dir) {
+    calMonth += dir;
+    if (calMonth > 12) { calMonth = 1; calYear++; }
+    if (calMonth < 1)  { calMonth = 12; calYear--; }
+
+    selectedDate = null;
+    document.getElementById('cal-detail-date-text').textContent = '마감일을 선택하세요';
+    document.getElementById('cal-detail-count').style.display = 'none';
+    document.getElementById('cal-detail-body').innerHTML =
+      '<div class="cal-empty-state">' +
+      '<i class="fas fa-calendar-xmark" style="color:#fca5a5"></i>' +
+      '<p style="font-size:.82rem">마감일을 클릭하면<br>해당 일 마감 공고를 볼 수 있습니다</p>' +
+      '</div>';
+
+    await refreshCal();
+  };
+
+  window.selectCalDay = function(ds) {
+    selectedDate = ds;
+    renderCalGrid();
+
+    var notices = calData[ds] || [];
+    var parts = ds.split('-');
+    var diff = calcDday(ds);
+
+    var label = parseInt(parts[0],10) + '년 ' + parseInt(parts[1],10) + '월 ' + parseInt(parts[2],10) + '일 마감';
+    document.getElementById('cal-detail-date-text').textContent = label;
+
+    var countEl = document.getElementById('cal-detail-count');
+    if (notices.length > 0) {
+      countEl.style.display = '';
+      countEl.textContent = notices.length + '건';
+      if (diff !== null && diff >= 0 && diff <= 3) {
+        countEl.style.background = '#fef2f2';
+        countEl.style.color = '#dc2626';
+      } else {
+        countEl.style.background = '';
+        countEl.style.color = '';
+      }
+    } else {
+      countEl.style.display = 'none';
+    }
+
+    var body = document.getElementById('cal-detail-body');
+    if (!notices.length) {
+      body.innerHTML = '<div class="cal-empty-state"><i class="fas fa-inbox"></i><p>이 날짜에 마감 공고가 없습니다</p></div>';
+      return;
+    }
+
+    body.innerHTML = notices.map(function(n) {
+      var closeStr  = n.closing_at || '';
+      var closeDate = closeStr ? formatKstDate(closeStr) : '';
+      var closeTime = closeStr ? formatKstTime(closeStr) : '';
+      var budget    = n.budget_formatted || '';
+      var nDiff     = calcDday(closeDate);
+
+      return '<div class="cal-notice-row js-go-detail" data-id="' + escAttr(n.id) + '" data-url="' + escAttr(n.detail_url || '') + '">' +
+        '<div class="cal-notice-row-top">' +
+          '<span class="cal-src-tag ' + (n.source_system||'') + '">' + srcLabel(n.source_system) + '</span>' +
+          '<span class="cal-notice-type">' + esc(n.notice_type||'') + '</span>' +
+          ddayLabel(nDiff) +
+        '</div>' +
+        '<div class="cal-notice-title">' + esc(n.title||'') + '</div>' +
+        '<div class="cal-notice-meta">' +
+          '<span><i class="fas fa-building"></i> ' + esc(n.issuing_org||'') + '</span>' +
+          (budget ? '<span><i class="fas fa-won-sign"></i> ' + esc(budget) + '</span>' : '') +
+          (closeTime ? '<span class="cal-close-time"><i class="fas fa-clock"></i> ' + esc(closeTime) + ' 마감</span>' : '') +
+        '</div>' +
+      '</div>';
+    }).join('');
+  };
+
+  /* ── 공통 ────────────────────────────────────────────────── */
+  window.heroSearch = function() {
+    var q = (document.getElementById('hero-search-input')||{}).value;
+    if (q && q.trim()) {
+      window.location.href = '/notices?q=' + encodeURIComponent(q.trim());
+    }
+  };
+
+  window.goSearch = function(kw) {
+    window.location.href = '/notices?q=' + encodeURIComponent(kw);
+  };
+
+  window.goDetail = function(id, url) {
+    if (url && url !== 'undefined' && url !== '') {
+      window.open(url, '_blank');
+    } else {
+      window.location.href = '/notices?id=' + id;
+    }
+  };
+
+  /* ── DOMContentLoaded ──────────────────────────────────── */
+  document.addEventListener('click', function(e) {
+    var card = e.target.closest('.js-go-detail');
+    if (!card) return;
+    goDetail(card.dataset.id, card.dataset.url || '');
+  });
+
+  document.addEventListener('DOMContentLoaded', function() {
+    if (typeof PublicAuth !== 'undefined') PublicAuth.updateHeader();
+
+    refreshHomeSectionsSafely();
+
+    if (window.__gonggomoaHomeRefreshTimer) {
+      clearInterval(window.__gonggomoaHomeRefreshTimer);
+    }
+    window.__gonggomoaHomeRefreshTimer = setInterval(refreshHomeSectionsSafely, 60000);
+
+    if (!window.__gonggomoaHomeVisibilityBound) {
+      document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') refreshHomeSectionsSafely();
+      });
+      window.__gonggomoaHomeVisibilityBound = true;
+    }
+
+    document.querySelectorAll('.src-tab').forEach(function(tab) {
+      tab.addEventListener('click', function() {
+        document.querySelectorAll('.src-tab').forEach(function(t){
+          t.classList.remove('active');
+        });
+        tab.classList.add('active');
+        if (!homeRefreshInFlight) renderLatest(tab.dataset.src);
+      });
+    });
+
+    var inp = document.getElementById('hero-search-input');
+    if (inp) {
+      inp.addEventListener('keydown', function(e){
+        if (e.key === 'Enter') heroSearch();
+      });
+    }
+
+    if (sessionStorage.getItem('openCal')) {
+      sessionStorage.removeItem('openCal');
+      setTimeout(function(){ showView('calendar'); }, 300);
+    }
+  });
+
+  var styleEl = document.createElement('style');
+  styleEl.textContent = '@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}';
+  document.head.appendChild(styleEl);
+})();
+</script>
+</body>
+</html>
