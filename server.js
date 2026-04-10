@@ -1,6 +1,3 @@
-/* ═══════════════════════════════════════════════════
-   server.js  —  공고모아 백엔드 (MySQL 버전)
-═══════════════════════════════════════════════════ */
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -98,6 +95,17 @@ async function applyAdminRolesFromEnv() {
   }
 }
 
+function printMigrationHint(err) {
+  const message = String(err?.message || '');
+  const shouldGuide = /processedAt|processedBy|adminMemo|doesn't exist in table|Unknown column|Key column/i.test(message);
+
+  if (!shouldGuide) return;
+
+  console.error('⚠️ DB 스키마 불일치가 감지되었습니다.');
+  console.error('⚠️ 먼저 inquiry admin 마이그레이션을 실행하세요: npm run db:migrate:inquiry-admin');
+  console.error('⚠️ 배포 전 점검은 아래 스크립트로 확인하세요: npm run db:check:inquiry-admin');
+}
+
 connectDB().then(async () => {
   if (process.env.RESET_NOTICES_ON_START === 'true') {
     try {
@@ -116,6 +124,7 @@ connectDB().then(async () => {
     scheduler.start();
   });
 }).catch((err) => {
+  printMigrationHint(err);
   console.error('❌ 서버 시작 실패:', err.message);
   process.exit(1);
 });

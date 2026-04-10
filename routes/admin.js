@@ -223,9 +223,6 @@ function buildRunningTooLongItems(collectorStatus, thresholdMinutes) {
     .filter(item => item.elapsed_minutes * 60 * 1000 >= thresholdMs);
 }
 
-/* ─────────────────────────────
-   GET /api/admin/dashboard
-───────────────────────────── */
 router.get('/dashboard', async (req, res) => {
   try {
     const todayStart = getKstStartOfTodayUtc();
@@ -278,58 +275,27 @@ router.get('/dashboard', async (req, res) => {
       Inquiry.findAll({
         order: [['createdAt', 'DESC']],
         limit: 5,
-        attributes: [
-          'id',
-          'name',
-          'email',
-          'title',
-          'category',
-          'status',
-          'createdAt',
-          'message',
-          'adminMemo',
-          'processedAt',
-          'processedBy'
-        ]
+        attributes: ['id', 'name', 'email', 'title', 'category', 'status', 'createdAt', 'message', 'adminMemo', 'processedAt', 'processedBy']
       }),
+      CollectorRunLog.findAll({ order: [['createdAt', 'DESC']], limit: 20 }),
       CollectorRunLog.findAll({
-        order: [['createdAt', 'DESC']],
-        limit: 20
-      }),
-      CollectorRunLog.findAll({
-        where: {
-          status: 'error',
-          createdAt: { [Op.gte]: errorWindowStart }
-        },
+        where: { status: 'error', createdAt: { [Op.gte]: errorWindowStart } },
         order: [['createdAt', 'DESC']],
         limit: 5
       }),
       CollectorRunLog.count({
-        where: {
-          status: 'error',
-          createdAt: { [Op.gte]: errorWindowStart }
-        }
+        where: { status: 'error', createdAt: { [Op.gte]: errorWindowStart } }
       })
     ]);
 
-    const todayVisitors = new Set(
-      todayPageViewRows.map(row => String(row.session_id || '').trim()).filter(Boolean)
-    ).size;
-
+    const todayVisitors = new Set(todayPageViewRows.map(row => String(row.session_id || '').trim()).filter(Boolean)).size;
     const collectorStatus = typeof scheduler.getCollectorStatuses === 'function'
       ? scheduler.getCollectorStatuses()
       : { generatedAt: new Date().toISOString(), items: [] };
-
-    const collectorItems = Array.isArray(collectorStatus.items)
-      ? collectorStatus.items
-      : [];
-
+    const collectorItems = Array.isArray(collectorStatus.items) ? collectorStatus.items : [];
     const collectorsEnabled = collectorItems.filter(item => item.enabled).length;
     const collectorsRunning = collectorItems.filter(item => item.running).length;
-    const runningTooLongItems = buildRunningTooLongItems(
-      collectorStatus,
-      alertConfig.stuckThresholdMinutes
-    );
+    const runningTooLongItems = buildRunningTooLongItems(collectorStatus, alertConfig.stuckThresholdMinutes);
 
     res.json({
       summary: {
@@ -372,21 +338,13 @@ router.get('/dashboard', async (req, res) => {
   }
 });
 
-/* ─────────────────────────────
-   GET /api/admin/collectors/logs
-───────────────────────────── */
 router.get('/collectors/logs', async (req, res) => {
   try {
     const filters = buildCollectorLogFilters(req.query);
     const where = buildCollectorLogWhere(filters);
 
     const [result, startedCount, successCount, errorCount, skippedCount] = await Promise.all([
-      CollectorRunLog.findAndCountAll({
-        where,
-        order: [['createdAt', 'DESC']],
-        offset: filters.offset,
-        limit: filters.limit
-      }),
+      CollectorRunLog.findAndCountAll({ where, order: [['createdAt', 'DESC']], offset: filters.offset, limit: filters.limit }),
       CollectorRunLog.count({ where: { ...where, status: 'started' } }),
       CollectorRunLog.count({ where: { ...where, status: 'success' } }),
       CollectorRunLog.count({ where: { ...where, status: 'error' } }),
@@ -427,9 +385,6 @@ router.get('/collectors/logs', async (req, res) => {
   }
 });
 
-/* ─────────────────────────────
-   GET /api/admin/collectors/logs/:id
-───────────────────────────── */
 router.get('/collectors/logs/:id', async (req, res) => {
   try {
     const row = await CollectorRunLog.findByPk(req.params.id);
@@ -438,49 +393,28 @@ router.get('/collectors/logs/:id', async (req, res) => {
       return res.status(404).json({ error: '실행 이력을 찾을 수 없습니다.' });
     }
 
-    res.json({
-      item: toCollectorLogItem(row)
-    });
+    res.json({ item: toCollectorLogItem(row) });
   } catch (err) {
     console.error('[ADMIN_COLLECTOR_LOG_DETAIL]', err);
     res.status(500).json({ error: '수집기 실행 이력 상세를 불러오는 중 오류가 발생했습니다.' });
   }
 });
 
-/* ─────────────────────────────
-   POST /api/admin/collectors/:key/run
-───────────────────────────── */
 router.post('/collectors/:key/run', async (req, res) => {
   try {
     const key = String(req.params.key || '').trim();
 
     const actorRow = req.userId
-      ? await User.findByPk(req.userId, {
-          attributes: ['id', 'email', 'nickname', 'role']
-        })
+      ? await User.findByPk(req.userId, { attributes: ['id', 'email', 'nickname', 'role'] })
       : null;
 
     const actor = actorRow
-      ? {
-          userId: actorRow.id,
-          email: actorRow.email,
-          name: actorRow.nickname,
-          role: actorRow.role
-        }
-      : {
-          userId: req.userId || null,
-          role: req.userRole || 'admin'
-        };
+      ? { userId: actorRow.id, email: actorRow.email, name: actorRow.nickname, role: actorRow.role }
+      : { userId: req.userId || null, role: req.userRole || 'admin' };
 
     const result = typeof scheduler.runCollectorNow === 'function'
       ? scheduler.runCollectorNow(key, req.body || {}, actor)
-      : {
-          ok: false,
-          started: false,
-          code: 'not_supported',
-          message: '수동 실행 기능이 준비되지 않았습니다.',
-          item: null
-        };
+      : { ok: false, started: false, code: 'not_supported', message: '수동 실행 기능이 준비되지 않았습니다.', item: null };
 
     if (!result.ok && result.code === 'invalid_collector') {
       return res.status(400).json({ error: result.message, ...result });
@@ -494,10 +428,7 @@ router.post('/collectors/:key/run', async (req, res) => {
       ? (collectorStatus.items.find(entry => entry.key === key) || result.item || null)
       : (result.item || null);
 
-    const recentCollectorLogs = await CollectorRunLog.findAll({
-      order: [['createdAt', 'DESC']],
-      limit: 20
-    });
+    const recentCollectorLogs = await CollectorRunLog.findAll({ order: [['createdAt', 'DESC']], limit: 20 });
 
     res.json({
       ...result,
@@ -511,9 +442,6 @@ router.post('/collectors/:key/run', async (req, res) => {
   }
 });
 
-/* ─────────────────────────────
-   GET /api/admin/users
-───────────────────────────── */
 router.get('/users', async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -541,12 +469,7 @@ router.get('/users', async (req, res) => {
     }
 
     const [result, total, adminCount, userCount] = await Promise.all([
-      User.findAndCountAll({
-        where,
-        order: [['createdAt', 'DESC']],
-        offset,
-        limit
-      }),
+      User.findAndCountAll({ where, order: [['createdAt', 'DESC']], offset, limit }),
       User.count(),
       User.count({ where: { role: 'admin' } }),
       User.count({ where: { role: 'user' } })
@@ -554,17 +477,8 @@ router.get('/users', async (req, res) => {
 
     res.json({
       data: result.rows.map(user => toUserListItem(user)),
-      pagination: {
-        total: result.count,
-        page,
-        limit,
-        pages: Math.max(Math.ceil(result.count / limit), 1)
-      },
-      summary: {
-        total,
-        admin: adminCount,
-        user: userCount
-      },
+      pagination: { total: result.count, page, limit, pages: Math.max(Math.ceil(result.count / limit), 1) },
+      summary: { total, admin: adminCount, user: userCount },
       filters: { q, role }
     });
   } catch (err) {
@@ -573,9 +487,6 @@ router.get('/users', async (req, res) => {
   }
 });
 
-/* ─────────────────────────────
-   GET /api/admin/users/:id
-───────────────────────────── */
 router.get('/users/:id', async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id);
@@ -583,18 +494,13 @@ router.get('/users/:id', async (req, res) => {
       return res.status(404).json({ error: '회원을 찾을 수 없습니다.' });
     }
 
-    res.json({
-      user: toUserListItem(user)
-    });
+    res.json({ user: toUserListItem(user) });
   } catch (err) {
     console.error('[ADMIN_USER_DETAIL]', err);
     res.status(500).json({ error: '회원 상세를 불러오는 중 오류가 발생했습니다.' });
   }
 });
 
-/* ─────────────────────────────
-   PATCH /api/admin/users/:id
-───────────────────────────── */
 router.patch('/users/:id', async (req, res) => {
   try {
     const user = await User.findByPk(req.params.id);
@@ -602,13 +508,7 @@ router.patch('/users/:id', async (req, res) => {
       return res.status(404).json({ error: '회원을 찾을 수 없습니다.' });
     }
 
-    const {
-      nickname,
-      company,
-      phone,
-      role,
-      keywords
-    } = req.body || {};
+    const { nickname, company, phone, role, keywords } = req.body || {};
 
     if (nickname !== undefined) {
       const value = String(nickname || '').trim();
@@ -618,23 +518,16 @@ router.patch('/users/:id', async (req, res) => {
       user.nickname = value;
     }
 
-    if (company !== undefined) {
-      user.company = String(company || '').trim();
-    }
-
-    if (phone !== undefined) {
-      user.phone = String(phone || '').trim();
-    }
+    if (company !== undefined) user.company = String(company || '').trim();
+    if (phone !== undefined) user.phone = String(phone || '').trim();
 
     if (role !== undefined) {
       if (!['user', 'admin'].includes(role)) {
         return res.status(400).json({ error: '유효하지 않은 권한값입니다.' });
       }
-
       if (Number(user.id) === Number(req.userId) && role !== 'admin') {
         return res.status(400).json({ error: '본인 관리자 권한은 해제할 수 없습니다.' });
       }
-
       user.role = role;
     }
 
@@ -643,20 +536,13 @@ router.patch('/users/:id', async (req, res) => {
     }
 
     await user.save();
-
-    res.json({
-      message: '회원 정보가 저장되었습니다.',
-      user: toUserListItem(user)
-    });
+    res.json({ message: '회원 정보가 저장되었습니다.', user: toUserListItem(user) });
   } catch (err) {
     console.error('[ADMIN_USER_UPDATE]', err);
     res.status(500).json({ error: '회원 정보 수정 중 오류가 발생했습니다.' });
   }
 });
 
-/* ─────────────────────────────
-   GET /api/admin/inquiries
-───────────────────────────── */
 router.get('/inquiries', async (req, res) => {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -687,12 +573,7 @@ router.get('/inquiries', async (req, res) => {
     }
 
     const [result, total, received, inProgress, done] = await Promise.all([
-      Inquiry.findAndCountAll({
-        where,
-        order: [['createdAt', 'DESC']],
-        offset,
-        limit
-      }),
+      Inquiry.findAndCountAll({ where, order: [['createdAt', 'DESC']], offset, limit }),
       Inquiry.count(),
       Inquiry.count({ where: { status: 'received' } }),
       Inquiry.count({ where: { status: 'in_progress' } }),
@@ -712,26 +593,13 @@ router.get('/inquiries', async (req, res) => {
 
     const data = result.rows.map(row => {
       const item = toInquiryItem(row);
-      return {
-        ...item,
-        user: item.user_id ? (userMap.get(item.user_id) || null) : null
-      };
+      return { ...item, user: item.user_id ? (userMap.get(item.user_id) || null) : null };
     });
 
     res.json({
       data,
-      pagination: {
-        total: result.count,
-        page,
-        limit,
-        pages: Math.max(Math.ceil(result.count / limit), 1)
-      },
-      summary: {
-        total,
-        received,
-        in_progress: inProgress,
-        done
-      },
+      pagination: { total: result.count, page, limit, pages: Math.max(Math.ceil(result.count / limit), 1) },
+      summary: { total, received, in_progress: inProgress, done },
       filters: { q, status }
     });
   } catch (err) {
@@ -740,13 +608,9 @@ router.get('/inquiries', async (req, res) => {
   }
 });
 
-/* ─────────────────────────────
-   GET /api/admin/inquiries/:id
-───────────────────────────── */
 router.get('/inquiries/:id', async (req, res) => {
   try {
     const inquiry = await Inquiry.findByPk(req.params.id);
-
     if (!inquiry) {
       return res.status(404).json({ error: '문의를 찾을 수 없습니다.' });
     }
@@ -768,34 +632,21 @@ router.get('/inquiries/:id', async (req, res) => {
       processedByUser = adminRow ? adminRow.toJSON() : null;
     }
 
-    res.json({
-      inquiry: {
-        ...toInquiryItem(inquiry),
-        user,
-        processedByUser
-      }
-    });
+    res.json({ inquiry: { ...toInquiryItem(inquiry), user, processedByUser } });
   } catch (err) {
     console.error('[ADMIN_INQUIRY_DETAIL]', err);
     res.status(500).json({ error: '문의 상세를 불러오는 중 오류가 발생했습니다.' });
   }
 });
 
-/* ─────────────────────────────
-   PATCH /api/admin/inquiries/:id
-───────────────────────────── */
 router.patch('/inquiries/:id', async (req, res) => {
   try {
     const inquiry = await Inquiry.findByPk(req.params.id);
-
     if (!inquiry) {
       return res.status(404).json({ error: '문의를 찾을 수 없습니다.' });
     }
 
-    const {
-      status,
-      adminMemo
-    } = req.body || {};
+    const { status, adminMemo } = req.body || {};
 
     if (status !== undefined) {
       const nextStatus = String(status || '').trim();
@@ -829,10 +680,7 @@ router.patch('/inquiries/:id', async (req, res) => {
 
     res.json({
       message: '문의 상태가 저장되었습니다.',
-      inquiry: {
-        ...toInquiryItem(inquiry),
-        processedByUser
-      }
+      inquiry: { ...toInquiryItem(inquiry), processedByUser }
     });
   } catch (err) {
     console.error('[ADMIN_INQUIRY_UPDATE]', err);

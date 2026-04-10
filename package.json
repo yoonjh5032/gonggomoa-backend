@@ -9,7 +9,9 @@
     "fix:g2b-urls": "node fix-g2b-detail-urls.js",
     "purge:expired-notices": "node purge-expired-notices.js",
     "refresh:seoul-contract": "node scripts/refresh-seoul-contract.js",
-    "backfill:notice-visibility": "node scripts/backfill-notice-visibility.js"
+    "backfill:notice-visibility": "node scripts/backfill-notice-visibility.js",
+    "db:migrate:inquiry-admin": "node scripts/migrate-inquiry-admin-fields.js",
+    "db:check:inquiry-admin": "node scripts/check-inquiry-admin-schema.js"
   },
   "dependencies": {
     "axios": "^1.7.0",
