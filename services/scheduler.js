@@ -1320,7 +1320,7 @@ function start() {
     timezone: 'Asia/Seoul',
   });
 
-  cron.schedule('5 0 * * *', () => purgeExpiredNotices({ triggerType: 'maintenance' }), {
+  cron.schedule('0 9,18 * * *', () => purgeExpiredNotices({ triggerType: 'maintenance' }), {
     timezone: 'Asia/Seoul',
   });
 
