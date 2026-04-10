@@ -85,12 +85,148 @@ function toCollectorLogItem(row) {
   };
 }
 
+function parseDateBoundary(value, endOfDay = false) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(raw);
+
+  if (isDateOnly) {
+    return endOfDay
+      ? new Date(`${raw}T23:59:59.999Z`)
+      : new Date(`${raw}T00:00:00.000Z`);
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function buildCollectorLogFilters(query = {}) {
+  const page = Math.max(parseInt(query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(query.limit, 10) || 20, 1), 100);
+
+  const key = String(query.key || 'all').trim();
+  const status = String(query.status || 'all').trim();
+  const trigger_type = String(query.trigger_type || 'all').trim();
+  const from = String(query.from || '').trim();
+  const to = String(query.to || '').trim();
+  const q = String(query.q || '').trim();
+
+  return {
+    page,
+    limit,
+    offset: (page - 1) * limit,
+    key,
+    status,
+    trigger_type,
+    from,
+    to,
+    q
+  };
+}
+
+function buildCollectorLogWhere(filters) {
+  const where = {};
+
+  if (filters.key && filters.key !== 'all') {
+    where.collector_key = filters.key;
+  }
+
+  if (filters.status && filters.status !== 'all') {
+    if (!['started', 'success', 'error', 'skipped'].includes(filters.status)) {
+      throw new Error('유효하지 않은 상태 필터입니다.');
+    }
+    where.status = filters.status;
+  }
+
+  if (filters.trigger_type && filters.trigger_type !== 'all') {
+    if (!['manual', 'scheduled', 'startup', 'maintenance'].includes(filters.trigger_type)) {
+      throw new Error('유효하지 않은 실행 유형 필터입니다.');
+    }
+    where.trigger_type = filters.trigger_type;
+  }
+
+  const startedAt = {};
+  const fromDate = parseDateBoundary(filters.from, false);
+  const toDate = parseDateBoundary(filters.to, true);
+
+  if (filters.from && !fromDate) {
+    throw new Error('유효하지 않은 시작일입니다.');
+  }
+
+  if (filters.to && !toDate) {
+    throw new Error('유효하지 않은 종료일입니다.');
+  }
+
+  if (fromDate) {
+    startedAt[Op.gte] = fromDate;
+  }
+
+  if (toDate) {
+    startedAt[Op.lte] = toDate;
+  }
+
+  if (Object.keys(startedAt).length) {
+    where.started_at = startedAt;
+  }
+
+  if (filters.q) {
+    where[Op.or] = [
+      { collector_key: { [Op.like]: `%${filters.q}%` } },
+      { collector_label: { [Op.like]: `%${filters.q}%` } },
+      { job_name: { [Op.like]: `%${filters.q}%` } },
+      { actor_name: { [Op.like]: `%${filters.q}%` } },
+      { actor_email: { [Op.like]: `%${filters.q}%` } },
+      { error_message: { [Op.like]: `%${filters.q}%` } },
+      { skip_reason: { [Op.like]: `%${filters.q}%` } }
+    ];
+  }
+
+  return where;
+}
+
+function buildRunningTooLongItems(collectorStatus, thresholdMinutes) {
+  const items = Array.isArray(collectorStatus.items) ? collectorStatus.items : [];
+  const now = Date.now();
+  const thresholdMs = Math.max(Number(thresholdMinutes) || 20, 1) * 60 * 1000;
+
+  return items
+    .filter(item => item && item.running && item.lastStartedAt)
+    .map(item => {
+      const startedAt = new Date(item.lastStartedAt);
+      const elapsedMs = startedAt instanceof Date && !Number.isNaN(startedAt.getTime())
+        ? now - startedAt.getTime()
+        : 0;
+
+      return {
+        key: item.key,
+        label: item.label,
+        job_name: item.lastJob || '',
+        started_at: item.lastStartedAt,
+        elapsed_minutes: Math.max(0, Math.round(elapsedMs / 60000)),
+        threshold_minutes: thresholdMinutes,
+        last_error_message: item.lastErrorMessage || ''
+      };
+    })
+    .filter(item => item.elapsed_minutes * 60 * 1000 >= thresholdMs);
+}
+
 /* ─────────────────────────────
    GET /api/admin/dashboard
 ───────────────────────────── */
 router.get('/dashboard', async (req, res) => {
   try {
     const todayStart = getKstStartOfTodayUtc();
+    const errorWindowStart = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const alertConfig = typeof scheduler.getCollectorAlertConfig === 'function'
+      ? scheduler.getCollectorAlertConfig()
+      : {
+          slackEnabled: false,
+          cooldownMinutes: 30,
+          stuckThresholdMinutes: 20,
+          watchdogCron: '*/5 * * * *'
+        };
 
     const [
       usersTotal,
@@ -105,7 +241,9 @@ router.get('/dashboard', async (req, res) => {
       todayPageViewRows,
       recentUsers,
       recentInquiries,
-      recentCollectorLogs
+      recentCollectorLogs,
+      recentCollectorErrors,
+      collectorErrorCount24h
     ] = await Promise.all([
       User.count(),
       User.count({ where: { role: 'admin' } }),
@@ -134,6 +272,20 @@ router.get('/dashboard', async (req, res) => {
       CollectorRunLog.findAll({
         order: [['createdAt', 'DESC']],
         limit: 20
+      }),
+      CollectorRunLog.findAll({
+        where: {
+          status: 'error',
+          createdAt: { [Op.gte]: errorWindowStart }
+        },
+        order: [['createdAt', 'DESC']],
+        limit: 5
+      }),
+      CollectorRunLog.count({
+        where: {
+          status: 'error',
+          createdAt: { [Op.gte]: errorWindowStart }
+        }
       })
     ]);
 
@@ -151,6 +303,10 @@ router.get('/dashboard', async (req, res) => {
 
     const collectorsEnabled = collectorItems.filter(item => item.enabled).length;
     const collectorsRunning = collectorItems.filter(item => item.running).length;
+    const runningTooLongItems = buildRunningTooLongItems(
+      collectorStatus,
+      alertConfig.stuckThresholdMinutes
+    );
 
     res.json({
       summary: {
@@ -166,9 +322,23 @@ router.get('/dashboard', async (req, res) => {
         visitorsToday: todayVisitors,
         collectorsEnabled,
         collectorsRunning,
-        collectorLogCount: recentCollectorLogs.length
+        collectorLogCount: recentCollectorLogs.length,
+        collectorErrorCount24h,
+        collectorsRunningTooLong: runningTooLongItems.length
       },
       collectorStatus,
+      collectorAlerts: {
+        generatedAt: new Date().toISOString(),
+        slackEnabled: Boolean(alertConfig.slackEnabled),
+        cooldownMinutes: alertConfig.cooldownMinutes,
+        stuckThresholdMinutes: alertConfig.stuckThresholdMinutes,
+        watchdogCron: alertConfig.watchdogCron,
+        hasWarning: collectorErrorCount24h > 0 || runningTooLongItems.length > 0,
+        recentErrorCount24h: collectorErrorCount24h,
+        runningTooLongCount: runningTooLongItems.length,
+        runningTooLongItems,
+        recentErrors: recentCollectorErrors.map(toCollectorLogItem)
+      },
       recentCollectorLogs: recentCollectorLogs.map(toCollectorLogItem),
       recentUsers: recentUsers.map(user => toUserListItem(user)),
       recentInquiries: recentInquiries.map(item => {
@@ -190,45 +360,73 @@ router.get('/dashboard', async (req, res) => {
 ───────────────────────────── */
 router.get('/collectors/logs', async (req, res) => {
   try {
-    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
-    const offset = (page - 1) * limit;
-    const key = String(req.query.key || 'all').trim();
-    const status = String(req.query.status || 'all').trim();
+    const filters = buildCollectorLogFilters(req.query);
+    const where = buildCollectorLogWhere(filters);
 
-    const where = {};
-
-    if (key && key !== 'all') {
-      where.collector_key = key;
-    }
-
-    if (status && status !== 'all') {
-      if (!['started', 'success', 'error', 'skipped'].includes(status)) {
-        return res.status(400).json({ error: '유효하지 않은 상태 필터입니다.' });
-      }
-      where.status = status;
-    }
-
-    const result = await CollectorRunLog.findAndCountAll({
-      where,
-      order: [['createdAt', 'DESC']],
-      offset,
-      limit
-    });
+    const [result, startedCount, successCount, errorCount, skippedCount] = await Promise.all([
+      CollectorRunLog.findAndCountAll({
+        where,
+        order: [['createdAt', 'DESC']],
+        offset: filters.offset,
+        limit: filters.limit
+      }),
+      CollectorRunLog.count({ where: { ...where, status: 'started' } }),
+      CollectorRunLog.count({ where: { ...where, status: 'success' } }),
+      CollectorRunLog.count({ where: { ...where, status: 'error' } }),
+      CollectorRunLog.count({ where: { ...where, status: 'skipped' } })
+    ]);
 
     res.json({
       data: result.rows.map(toCollectorLogItem),
       pagination: {
         total: result.count,
-        page,
-        limit,
-        pages: Math.max(Math.ceil(result.count / limit), 1)
+        page: filters.page,
+        limit: filters.limit,
+        pages: Math.max(Math.ceil(result.count / filters.limit), 1)
       },
-      filters: { key, status }
+      filters: {
+        key: filters.key,
+        status: filters.status,
+        trigger_type: filters.trigger_type,
+        from: filters.from,
+        to: filters.to,
+        q: filters.q
+      },
+      summary: {
+        total: result.count,
+        started: startedCount,
+        success: successCount,
+        error: errorCount,
+        skipped: skippedCount
+      }
     });
   } catch (err) {
+    if (err && /유효하지 않은/.test(err.message || '')) {
+      return res.status(400).json({ error: err.message });
+    }
+
     console.error('[ADMIN_COLLECTOR_LOGS]', err);
     res.status(500).json({ error: '수집기 실행 이력을 불러오는 중 오류가 발생했습니다.' });
+  }
+});
+
+/* ─────────────────────────────
+   GET /api/admin/collectors/logs/:id
+───────────────────────────── */
+router.get('/collectors/logs/:id', async (req, res) => {
+  try {
+    const row = await CollectorRunLog.findByPk(req.params.id);
+
+    if (!row) {
+      return res.status(404).json({ error: '실행 이력을 찾을 수 없습니다.' });
+    }
+
+    res.json({
+      item: toCollectorLogItem(row)
+    });
+  } catch (err) {
+    console.error('[ADMIN_COLLECTOR_LOG_DETAIL]', err);
+    res.status(500).json({ error: '수집기 실행 이력 상세를 불러오는 중 오류가 발생했습니다.' });
   }
 });
 

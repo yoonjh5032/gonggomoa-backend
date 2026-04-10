@@ -1,3 +1,4 @@
+const axios = require('axios');
 const cron = require('node-cron');
 const { Op } = require('sequelize');
 
@@ -50,11 +51,25 @@ const COLLECTOR_LOG_LIMIT = Math.min(
   1000
 );
 
+const SLACK_WEBHOOK_URL = String(process.env.SLACK_WEBHOOK_URL || '').trim();
+const COLLECTOR_ALERT_COOLDOWN_MINUTES = Math.max(
+  Number(process.env.COLLECTOR_ALERT_COOLDOWN_MINUTES || 30),
+  1
+);
+const COLLECTOR_STUCK_THRESHOLD_MINUTES = Math.max(
+  Number(process.env.COLLECTOR_STUCK_THRESHOLD_MINUTES || 20),
+  5
+);
+const COLLECTOR_WATCHDOG_CRON =
+  process.env.COLLECTOR_WATCHDOG_CRON || '*/5 * * * *';
+
 let runningMinuteJob = false;
 let runningSeoulContractJob = false;
 let runningPurgeJob = false;
 let runningLocalGovJob = false;
 let runningG2bSyncJob = '';
+
+const alertCooldownMap = new Map();
 
 function createMonitorEntry(key, label, options = {}) {
   return {
@@ -79,6 +94,7 @@ function createMonitorEntry(key, label, options = {}) {
     _activeLogId: null,
     _activeLogPromise: null,
     _activeContext: null,
+    _lastStuckAlertToken: '',
   };
 }
 
@@ -168,6 +184,12 @@ function safeJson(value) {
 
 function normalizeText(value) {
   return String(value || '').trim();
+}
+
+function truncateText(value, max = 300) {
+  const text = normalizeText(value);
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 function inferTriggerType(jobName, context = {}) {
@@ -344,6 +366,166 @@ function persistSkippedLog(key, reason, jobName, context = {}) {
     });
 }
 
+function isSlackAlertEnabled() {
+  return Boolean(SLACK_WEBHOOK_URL);
+}
+
+function getCollectorAlertConfig() {
+  return {
+    slackEnabled: isSlackAlertEnabled(),
+    cooldownMinutes: COLLECTOR_ALERT_COOLDOWN_MINUTES,
+    stuckThresholdMinutes: COLLECTOR_STUCK_THRESHOLD_MINUTES,
+    watchdogCron: COLLECTOR_WATCHDOG_CRON,
+  };
+}
+
+function shouldSendAlert(dedupeKey, cooldownMinutes = COLLECTOR_ALERT_COOLDOWN_MINUTES) {
+  const now = Date.now();
+  const cooldownMs = Math.max(Number(cooldownMinutes) || 0, 1) * 60 * 1000;
+  const lastSentAt = alertCooldownMap.get(dedupeKey) || 0;
+
+  if (lastSentAt && now - lastSentAt < cooldownMs) {
+    return false;
+  }
+
+  alertCooldownMap.set(dedupeKey, now);
+
+  if (alertCooldownMap.size > 300) {
+    const threshold = now - cooldownMs * 4;
+    for (const [key, timestamp] of alertCooldownMap.entries()) {
+      if (timestamp < threshold) {
+        alertCooldownMap.delete(key);
+      }
+    }
+  }
+
+  return true;
+}
+
+async function postSlackWebhook(payload) {
+  if (!isSlackAlertEnabled()) return false;
+  await axios.post(SLACK_WEBHOOK_URL, payload, {
+    timeout: 7000,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  return true;
+}
+
+function buildSlackFields(lines = []) {
+  return lines
+    .filter(Boolean)
+    .map((line) => ({ type: 'mrkdwn', text: line }));
+}
+
+function queueSlackAlert(payload, dedupeKey) {
+  if (!isSlackAlertEnabled()) return;
+  if (!shouldSendAlert(dedupeKey)) return;
+
+  Promise.resolve()
+    .then(() => postSlackWebhook(payload))
+    .then(() => {
+      console.log(`[스케줄러] Slack 알림 전송 완료 (${dedupeKey})`);
+    })
+    .catch((err) => {
+      console.error('[스케줄러] Slack 알림 전송 실패', err.message);
+    });
+}
+
+function buildAlertTitle(prefix, entry, jobName) {
+  return `${prefix} · ${entry.label}${jobName ? ` (${jobName})` : ''}`;
+}
+
+function sendCollectorErrorAlert(key, jobName, err, result = null, context = {}) {
+  const entry = collectorMonitor[key];
+  if (!entry || !isSlackAlertEnabled()) return;
+
+  const actor = normalizeActor((context && context.actor) || {}) || {};
+  const triggerType = inferTriggerType(jobName, context || {});
+  const errorMessage = truncateText(err ? err.message || err : 'unknown_error', 400);
+  const resultSummary = truncateText(JSON.stringify(normalizeMonitorResult(result) || {}), 400);
+  const startedAt = entry.lastStartedAt || new Date().toISOString();
+  const durationText = entry.lastDurationMs ? `${Math.round(entry.lastDurationMs / 1000)}초` : '-';
+
+  const payload = {
+    text: `[공고모아] 수집기 오류 - ${entry.label}`,
+    blocks: [
+      { type: 'header', text: { type: 'plain_text', text: buildAlertTitle('🚨 수집기 오류', entry, jobName) } },
+      {
+        type: 'section',
+        fields: buildSlackFields([
+          `*수집기*\n${entry.label} (${entry.key})`,
+          `*유형*\n${triggerType}`,
+          `*시작 시각*\n${startedAt}`,
+          `*소요 시간*\n${durationText}`,
+          `*실행자*\n${truncateText(actor.name || actor.email || 'system', 80)}`,
+          `*상태*\nerror`,
+        ]),
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*오류 메시지*\n\`${errorMessage || 'unknown_error'}\``,
+        },
+      },
+      ...(resultSummary && resultSummary !== '{}'
+        ? [{
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*결과 요약*\n\`${resultSummary}\``,
+            },
+          }]
+        : []),
+    ],
+  };
+
+  const dedupeKey = [
+    'error',
+    key,
+    jobName || '-',
+    truncateText(errorMessage, 120),
+  ].join('::');
+
+  queueSlackAlert(payload, dedupeKey);
+}
+
+function sendCollectorStuckAlert(entry, elapsedMs) {
+  if (!entry || !isSlackAlertEnabled()) return;
+
+  const startedAt = entry.lastStartedAt || new Date().toISOString();
+  const elapsedMinutes = Math.max(1, Math.round(elapsedMs / 60000));
+  const payload = {
+    text: `[공고모아] 장기 실행 경보 - ${entry.label}`,
+    blocks: [
+      { type: 'header', text: { type: 'plain_text', text: buildAlertTitle('⏰ 장기 실행 경보', entry, entry.lastJob) } },
+      {
+        type: 'section',
+        fields: buildSlackFields([
+          `*수집기*\n${entry.label} (${entry.key})`,
+          `*최근 작업*\n${entry.lastJob || '-'}`,
+          `*시작 시각*\n${startedAt}`,
+          `*경과 시간*\n약 ${elapsedMinutes}분`,
+          `*기준치*\n${COLLECTOR_STUCK_THRESHOLD_MINUTES}분`,
+          `*상태*\n실행 중`,
+        ]),
+      },
+      ...(entry.lastErrorMessage
+        ? [{
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*최근 오류 메시지*\n\`${truncateText(entry.lastErrorMessage, 300)}\``,
+            },
+          }]
+        : []),
+    ],
+  };
+
+  const dedupeKey = ['stuck', entry.key, entry.lastJob || '-', startedAt].join('::');
+  queueSlackAlert(payload, dedupeKey);
+}
+
 function syncCollectorEnabledState() {
   ['g2b_api', 'seoul_contract', 'local_gov'].forEach((key) => {
     if (collectorMonitor[key]) {
@@ -367,6 +549,7 @@ function markMonitorStart(key, jobName, context = {}) {
   entry.updatedAt = nowIso;
   entry._startedAtMs = Date.now();
   entry._activeContext = buildLogContext(jobName, context);
+  entry._lastStuckAlertToken = '';
 
   persistStartedLog(key, jobName, entry._activeContext);
 }
@@ -385,6 +568,7 @@ function markMonitorSuccess(key, jobName, result = null, context = null) {
   entry.lastResult = normalizeMonitorResult(result);
   entry.updatedAt = nowIso;
   entry._startedAtMs = null;
+  entry._lastStuckAlertToken = '';
 
   persistTerminalLog(
     key,
@@ -414,6 +598,7 @@ function markMonitorError(key, jobName, err, result = null, context = null) {
   entry.lastResult = normalizeMonitorResult(result);
   entry.updatedAt = nowIso;
   entry._startedAtMs = null;
+  entry._lastStuckAlertToken = '';
 
   persistTerminalLog(
     key,
@@ -427,6 +612,8 @@ function markMonitorError(key, jobName, err, result = null, context = null) {
     },
     context || entry._activeContext || {}
   );
+
+  sendCollectorErrorAlert(key, jobName, err, result, context || entry._activeContext || {});
 }
 
 function markMonitorSkipped(key, reason, jobName = '', context = {}) {
@@ -581,6 +768,32 @@ function finishG2bSync(jobName) {
   if (runningG2bSyncJob === jobName) {
     runningG2bSyncJob = '';
   }
+}
+
+function runCollectorWatchdog() {
+  syncCollectorEnabledState();
+  syncCollectorRunningState();
+
+  const thresholdMs = COLLECTOR_STUCK_THRESHOLD_MINUTES * 60 * 1000;
+
+  Object.values(collectorMonitor).forEach((entry) => {
+    if (!entry.running || !entry.lastStartedAt) return;
+
+    const startedAt = new Date(entry.lastStartedAt);
+    if (Number.isNaN(startedAt.getTime())) return;
+
+    const elapsedMs = Date.now() - startedAt.getTime();
+    if (elapsedMs < thresholdMs) return;
+
+    const alertToken = `${entry.lastStartedAt}:${entry.lastJob || '-'}`;
+    if (entry._lastStuckAlertToken === alertToken) return;
+
+    entry._lastStuckAlertToken = alertToken;
+    console.warn(
+      `[스케줄러] 장기 실행 감지 — ${entry.key} ${entry.lastJob || '-'} ${Math.round(elapsedMs / 60000)}분`
+    );
+    sendCollectorStuckAlert(entry, elapsedMs);
+  });
 }
 
 async function purgeExpiredNotices(context = {}) {
@@ -1081,8 +1294,6 @@ async function initialLoad() {
         }
       );
     }
-
-    // 초기 기동 시에는 서울 계약마당 자동 실행하지 않음
   } catch (err) {
     console.error('[스케줄러] 초기 로드 실패', err.message);
   }
@@ -1091,6 +1302,7 @@ async function initialLoad() {
 function start() {
   syncCollectorEnabledState();
   console.log(`[스케줄러] 활성 수집기: ${ENABLED_COLLECTOR_SOURCES.join(', ')}`);
+  console.log(`[스케줄러] Slack 알림 ${isSlackAlertEnabled() ? '활성화' : '비활성화'}`);
 
   cron.schedule('* * * * *', runMinuteCollectors, {
     timezone: 'Asia/Seoul',
@@ -1120,6 +1332,10 @@ function start() {
     timezone: 'Asia/Seoul',
   });
 
+  cron.schedule(COLLECTOR_WATCHDOG_CRON, runCollectorWatchdog, {
+    timezone: 'Asia/Seoul',
+  });
+
   console.log('[스케줄러] 분단위 수집 등록 완료');
   console.log(`[스케줄러] G2B 보정 수집 등록 완료 (${G2B_BACKFILL_CRON})`);
   console.log(
@@ -1131,6 +1347,9 @@ function start() {
   );
   console.log('[스케줄러] 만료 삭제 스케줄 등록 완료 (매일 00:05 KST)');
   console.log('[스케줄러] 서울 계약마당 스케줄 등록 완료 (매일 09:00, 17:00 KST)');
+  console.log(
+    `[스케줄러] watchdog 등록 완료 (${COLLECTOR_WATCHDOG_CRON}, 기준 ${COLLECTOR_STUCK_THRESHOLD_MINUTES}분)`
+  );
 
   setTimeout(() => {
     initialLoad().catch((err) => {
@@ -1145,6 +1364,7 @@ module.exports = {
   getCollectorStatuses,
   getCollectorStatusItem,
   getCollectorRunLogs,
+  getCollectorAlertConfig,
   runCollectorNow,
   purgeExpiredNotices,
   runG2bBackfill,
