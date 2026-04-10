@@ -968,7 +968,21 @@ function isActiveNotice(closingAt) {
 function evaluateKeywordGate(source, title, bodyText, options = {}) {
   const defaults = getDefaultOptions();
   const startupBackfill = isStartupBackfill(options);
-  const scheduledRegular = isScheduledRegularCollection(options);
+
+  const strictKeywordGate =
+    typeof source.strict_keyword_gate === 'boolean'
+      ? source.strict_keyword_gate
+      : defaults.strict_keyword_gate !== false;
+
+  const titleFirstFilter =
+    typeof source.title_first_filter === 'boolean'
+      ? source.title_first_filter
+      : defaults.title_first_filter !== false;
+
+  const bodyFallbackFilter =
+    typeof source.body_fallback_filter === 'boolean'
+      ? source.body_fallback_filter
+      : defaults.body_fallback_filter !== false;
 
   const includeRegex = startupBackfill
     ? RELAXED_STARTUP_INCLUDE_REGEX
@@ -978,25 +992,69 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
 
   const titleText = cleanText(title);
   const body = cleanText(bodyText);
-  const includeMatched = includeRegex && (includeRegex.test(titleText) || includeRegex.test(body));
-  const relaxedMatched =
-    RELAXED_STARTUP_INCLUDE_REGEX.test(titleText) || RELAXED_STARTUP_INCLUDE_REGEX.test(body);
-  const excludeMatched = excludeRegex && (excludeRegex.test(titleText) || excludeRegex.test(body));
 
-  if (startupBackfill && (includeMatched || relaxedMatched)) {
-    return { keep: true, reason: 'startup-include-match', titleText, bodyText: body };
+  const titleIncludeMatched = !!(includeRegex && titleText && includeRegex.test(titleText));
+  const bodyIncludeMatched = !!(includeRegex && body && includeRegex.test(body));
+  const titleRelaxedMatched = !!(titleText && RELAXED_STARTUP_INCLUDE_REGEX.test(titleText));
+  const bodyRelaxedMatched = !!(body && RELAXED_STARTUP_INCLUDE_REGEX.test(body));
+  const titleExcludeMatched = !!(excludeRegex && titleText && excludeRegex.test(titleText));
+  const bodyExcludeMatched = !!(excludeRegex && body && excludeRegex.test(body));
+
+  // 1) exclude 우선: 제목에서 제외어가 보이면 즉시 드롭
+  if (titleExcludeMatched) {
+    return { keep: false, reason: 'exclude-title', titleText, bodyText: body };
   }
 
-  if (scheduledRegular && (includeMatched || relaxedMatched)) {
-    return { keep: true, reason: 'scheduled-include-match', titleText, bodyText: body };
+  // 2) 제목이 공고성으로 확인되지 않았을 때만 body 제외어 적용
+  //    => 실제 공고 본문에 부수적으로 들어간 '회의'/'보고' 표현 때문에 과도하게 떨어지는 것 방지
+  if (
+    bodyFallbackFilter &&
+    bodyExcludeMatched &&
+    !titleIncludeMatched &&
+    !titleRelaxedMatched
+  ) {
+    return { keep: false, reason: 'exclude-body', titleText, bodyText: body };
   }
 
-  if (excludeMatched) {
-    return { keep: false, reason: 'exclude', titleText, bodyText: body };
+  // 3) 제목 우선 keep
+  if (titleFirstFilter) {
+    if (titleIncludeMatched || titleRelaxedMatched) {
+      return {
+        keep: true,
+        reason: startupBackfill ? 'startup-title-match' : 'title-match',
+        titleText,
+        bodyText: body,
+      };
+    }
+
+    // 4) 제목이 약할 때만 본문 fallback 허용
+    if (bodyFallbackFilter && (bodyIncludeMatched || bodyRelaxedMatched)) {
+      return {
+        keep: true,
+        reason: startupBackfill ? 'startup-body-fallback-match' : 'body-fallback-match',
+        titleText,
+        bodyText: body,
+      };
+    }
+  } else {
+    // title-first를 끈 경우의 후방 호환
+    if (
+      titleIncludeMatched ||
+      titleRelaxedMatched ||
+      (bodyFallbackFilter && (bodyIncludeMatched || bodyRelaxedMatched))
+    ) {
+      return {
+        keep: true,
+        reason: startupBackfill ? 'startup-match' : 'match',
+        titleText,
+        bodyText: body,
+      };
+    }
   }
 
-  if (includeMatched || relaxedMatched) {
-    return { keep: true, reason: 'match', titleText, bodyText: body };
+  // 5) strict gate가 꺼져 있으면 제외어만 없을 때 통과
+  if (!strictKeywordGate) {
+    return { keep: true, reason: 'non-strict-pass', titleText, bodyText: body };
   }
 
   return { keep: false, reason: 'no-include', titleText, bodyText: body };
