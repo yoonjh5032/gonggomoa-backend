@@ -312,6 +312,58 @@ function extractTitleFromBody(html = '') {
   return '';
 }
 
+function buildFallbackTitleFromBody(bodyText = '', source = null) {
+  const body = cleanText(bodyText)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!body) return '';
+
+  const extracted = extractTitleFromBody(body);
+  if (extracted && !isGenericPortalTitle(extracted)) {
+    return extracted;
+  }
+
+  const sentences = body
+    .split(/(?<=[.!?。]|다\.|요\.|니다\.)\s+|\s{2,}/)
+    .map((v) => cleanText(v))
+    .filter(Boolean);
+
+  const titleLikeRegex =
+    /(입찰공고|입찰|용역|제안서|평가위원|공개\s*모집|모집\s*공고|위탁|수탁기관|운영기관|수행기관|사업자\s*모집|협상에\s*의한\s*계약|안전점검|지정\s*공고)/i;
+
+  for (const sentence of sentences) {
+    if (!titleLikeRegex.test(sentence)) continue;
+    const candidate = sentence.slice(0, 120).replace(/\s+-\s+정보.*$/, '').trim();
+    if (candidate && !isGenericPortalTitle(candidate)) {
+      return candidate;
+    }
+  }
+
+  if (source?.key === 'gangbuk') {
+    const candidate = body.slice(0, 120).replace(/\s+-\s+정보.*$/, '').trim();
+    if (candidate && !isGenericPortalTitle(candidate)) {
+      return candidate;
+    }
+  }
+
+  return '';
+}
+
+function resolveParsedTitle(parsedDetail = {}, source = null) {
+  const normalizedTitle = cleanText(parsedDetail.title || '');
+  if (normalizedTitle && !isGenericPortalTitle(normalizedTitle)) {
+    return normalizedTitle;
+  }
+
+  const fallbackTitle = buildFallbackTitleFromBody(parsedDetail.bodyText || '', source);
+  if (fallbackTitle) {
+    return fallbackTitle;
+  }
+
+  return normalizedTitle;
+}
+
 function extractAnchorsWithAttrs(html, baseUrl) {
   const items = [];
   const anchorRegex = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
@@ -1087,15 +1139,19 @@ async function crawlSource(source, options = {}) {
       const parsedDetail = parseDetailByType(html, detailUrl, source);
       parsed += 1;
 
-      const normalizedTitle = cleanText(parsedDetail.title || '');
       const normalizedBody = cleanText(parsedDetail.bodyText || '');
+      const resolvedTitle = resolveParsedTitle(parsedDetail, source);
+      if (resolvedTitle) {
+        parsedDetail.title = resolvedTitle;
+      }
+      const normalizedTitle = cleanText(parsedDetail.title || '');
 
       if (!normalizedTitle && !normalizedBody) {
         droppedByEmpty += 1;
         continue;
       }
 
-      if (isGenericPortalTitle(normalizedTitle)) {
+      if (normalizedTitle && isGenericPortalTitle(normalizedTitle)) {
         droppedByGenericTitle += 1;
         if (genericTitleDropSamples.length < 3) {
           genericTitleDropSamples.push(normalizedTitle || '(제목 없음)');
