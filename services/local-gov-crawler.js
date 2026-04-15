@@ -43,6 +43,9 @@ const RELAXED_STARTUP_INCLUDE_REGEX =
 const STRONG_LIST_INCLUDE_REGEX =
   /(입찰공고|모집\s*공고|공개\s*모집|사업자\s*모집|수행기관\s*지정\s*공고|안전점검\s*수행기관|민간위탁|위탁운영기관\s*모집|수탁기관\s*모집|제안요청서|제안서\s*제출|협상에\s*의한\s*계약|공모사업\s*공고|지방보조사업자\s*모집)/i;
 
+const STRONG_BODY_FALLBACK_REGEX =
+  /(입찰공고|입찰에\s*부치는\s*사항|제안요청서|제안서\s*제출|협상에\s*의한\s*계약|수행기관\s*지정\s*공고|안전점검\s*수행기관|위탁운영기관\s*모집|수탁기관\s*모집|공개\s*모집|모집\s*공고|공모사업\s*공고|지방보조사업자\s*모집|사업자\s*모집)/i;
+
 const LOCAL_GOV_DATE_WINDOW_GRACE_DAYS = Number(
   process.env.LOCAL_GOV_DATE_WINDOW_GRACE_DAYS || 14
 );
@@ -212,6 +215,7 @@ function buildListPageUrls(source, maxPages = 3) {
 function normalizeCandidateTitle(title = '') {
   return cleanText(title)
     .replace(/\s+/g, ' ')
+    .replace(/\s*-->\s*[\s\S]*$/, '')
     .replace(/\s+-\s+정보.*$/, '')
     .replace(/\b이전글\b[\s\S]*$/, '')
     .replace(/\b다음글\b[\s\S]*$/, '')
@@ -225,6 +229,24 @@ function normalizeCandidateTitle(title = '') {
     .replace(/전체목록의\s*번호[\s\S]*$/, '')
     .replace(/정보를\s*제공하는\s*표이다\.?[\s\S]*$/, '')
     .trim();
+}
+
+function isSuspiciousNoticeTitle(title = '') {
+  const t = normalizeCandidateTitle(title);
+  if (!t) return true;
+
+  const suspiciousPatterns = [
+    /연장하기|로그아웃|로그인|닫기/,
+    /본문\s*바로가기|주메뉴\s*바로가기|사이트정보\s*바로가기/,
+    /대한민국\s*공식\s*전자정부\s*누리집/,
+    /공고문\s*\d+\s*부\.?\s*끝\.?$/i,
+    /^격자\s*공고문/i,
+    /^(붙임|첨부|별첨|서식)(?:\s|$)/,
+    /^정책연구\s*용역자료$/i,
+    /^용역자료$/i,
+  ];
+
+  return suspiciousPatterns.some((re) => re.test(t));
 }
 
 function isGenericPortalTitle(title = '') {
@@ -273,7 +295,7 @@ function isGenericPortalTitle(title = '') {
     /:\s*(?:관악|강북|구로|서초)구청$/i,
   ];
 
-  return genericPatterns.some((re) => re.test(t));
+  return isSuspiciousNoticeTitle(t) || genericPatterns.some((re) => re.test(t));
 }
 
 function extractTitle(html) {
@@ -375,13 +397,6 @@ function buildFallbackTitleFromBody(bodyText = '', source = null) {
   for (const sentence of sentences) {
     if (!titleLikeRegex.test(sentence)) continue;
     const candidate = normalizeCandidateTitle(sentence.slice(0, 120));
-    if (candidate && !isGenericPortalTitle(candidate)) {
-      return candidate;
-    }
-  }
-
-  if (source?.key === 'gangbuk') {
-    const candidate = normalizeCandidateTitle(body.slice(0, 120));
     if (candidate && !isGenericPortalTitle(candidate)) {
       return candidate;
     }
@@ -494,7 +509,7 @@ function filterItemsByTitleRules(items, source) {
   return items.filter((item) => {
     const text = normalizeCandidateTitle(item.text || '');
     if (!text) return false;
-    if (isGenericPortalTitle(text)) return false;
+    if (isGenericPortalTitle(text) || isSuspiciousNoticeTitle(text)) return false;
 
     const includeMatched = includeRegex && includeRegex.test(text);
     const strongIncludeMatched = STRONG_LIST_INCLUDE_REGEX.test(text);
@@ -1031,17 +1046,23 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
 
   const excludeRegex = source.exclude_regex || defaults.exclude_regex;
 
-  const titleText = cleanText(title);
+  const titleText = normalizeCandidateTitle(title);
   const body = cleanText(bodyText);
 
   const titleIncludeMatched = !!(includeRegex && titleText && includeRegex.test(titleText));
   const bodyIncludeMatched = !!(includeRegex && body && includeRegex.test(body));
   const titleRelaxedMatched = !!(titleText && RELAXED_STARTUP_INCLUDE_REGEX.test(titleText));
   const bodyRelaxedMatched = !!(body && RELAXED_STARTUP_INCLUDE_REGEX.test(body));
+  const bodyStrongMatched = !!(body && STRONG_BODY_FALLBACK_REGEX.test(body));
   const titleExcludeMatched = !!(excludeRegex && titleText && excludeRegex.test(titleText));
   const bodyExcludeMatched = !!(excludeRegex && body && excludeRegex.test(body));
 
-  // 1) exclude 우선: 제목에서 제외어가 보이면 즉시 드롭
+  // 1) 제목 자체가 포털/UI 오염 또는 첨부 꼬리면 즉시 드롭
+  if (isGenericPortalTitle(titleText) || isSuspiciousNoticeTitle(titleText)) {
+    return { keep: false, reason: 'generic-or-suspicious-title', titleText, bodyText: body };
+  }
+
+  // 2) exclude 우선: 제목에서 제외어가 보이면 즉시 드롭
   if (titleExcludeMatched) {
     return { keep: false, reason: 'exclude-title', titleText, bodyText: body };
   }
@@ -1068,8 +1089,8 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
       };
     }
 
-    // 4) 제목이 약할 때만 본문 fallback 허용
-    if (bodyFallbackFilter && (bodyIncludeMatched || bodyRelaxedMatched)) {
+    // 4) 제목이 약할 때만 강한 본문 신호로 fallback 허용
+    if (bodyFallbackFilter && bodyStrongMatched && (bodyIncludeMatched || bodyRelaxedMatched)) {
       return {
         keep: true,
         reason: startupBackfill ? 'startup-body-fallback-match' : 'body-fallback-match',
@@ -1082,7 +1103,7 @@ function evaluateKeywordGate(source, title, bodyText, options = {}) {
     if (
       titleIncludeMatched ||
       titleRelaxedMatched ||
-      (bodyFallbackFilter && (bodyIncludeMatched || bodyRelaxedMatched))
+      (bodyFallbackFilter && bodyStrongMatched && (bodyIncludeMatched || bodyRelaxedMatched))
     ) {
       return {
         keep: true,
