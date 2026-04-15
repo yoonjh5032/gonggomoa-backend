@@ -4,7 +4,7 @@
 // 2026-04-10 tuned: report/minute noise down, real notice recall preserved
 
 const COMMON_INCLUDE_REGEX =
-  /(입찰공고|전자입찰|입찰에\s*부치는\s*사항|입찰|재입찰|재공고|정정공고|변경공고|견적제출|수의견적|가격입찰서|일반공개경쟁입찰|용역(?:\s*공고)?|제안서|제안요청서|기술제안|제안서\s*제출|협상에\s*의한\s*계약|제안서\s*평가위원|평가위원(\s*\(후보자\))?|공개\s*모집|모집\s*공고|참여기관\s*모집|사업자\s*모집|수행기관\s*모집|수행기관\s*지정\s*신청\s*공고|수행기관\s*지정\s*공고|지정\s*신청\s*공고|수행주체\s*모집|수탁기관\s*모집|위탁운영기관\s*모집|운영기관\s*모집|민간위탁|안전점검\s*수행기관|지정\s*공고)/i;
+  /(입찰공고|전자입찰|입찰에\s*부치는\s*사항|입찰|재입찰|재공고|정정공고|변경공고|견적제출|수의견적|가격입찰서|일반공개경쟁입찰|용역(?:\s*공고)?|제안서|제안요청서|기술제안|제안서\s*제출|협상에\s*의한\s*계약|제안서\s*평가위원|평가위원(\s*\(후보자\))?|공개\s*모집|모집\s*공고|참여기관\s*모집|사업자\s*모집|수행기관\s*모집|수행기관\s*지정\s*공고|수행주체\s*모집|수탁기관\s*모집|위탁운영기관\s*모집|운영기관\s*모집|민간위탁|안전점검\s*수행기관|지정\s*공고)/i;
 
 const COMMON_EXCLUDE_REGEX =
   /(결과\s*공고|평가결과|선정결과|개찰결과|낙찰자|낙찰\s*결과|협상\s*결과|개최결과\s*공개|합격자|최종합격|채용공고|채용\s*재공고|기간제근로자\s*채용|임기제공무원\s*채용|행정처분|영업정지|등록취소|공시송달|반송분\s*공시송달|의견청취|청문|과태료|처분\s*사전통지|정보공개제도\s*(안내|소개|홍보|설명)|청구수수료|종합민원\s*(안내|처리|절차|서비스)|민원처리\s*(결과|안내|절차|현황)|압류|제출안건|직권말소|행정예고|정정공시공고|도로지정\s*공고|공인\s*등록\s*및\s*폐기\s*공고|개인정보의\s*목적\s*외\s*이용|제3자\s*제공\s*공고|공람공고|재공람공고|회의록|심의록|속기록|녹취록|위원회\s*회의록|의회\s*회의록|간담회\s*결과|감사\s*결과|검토결과서|영향평가\s*검토결과서|결과보고서|사업결과보고서?|연구보고서|연구용역\s*결과보고서?|용역\s*결과보고서?|정책연구\s*용역자료|용역자료|연구자료|자료집|최종보고서|중간보고서|성과보고서|감사결과보고서?|업무보고|주간업무(?:계획|보고)?|월간업무(?:계획|보고)?|결산서|보고서|백서)/i;
@@ -28,7 +28,7 @@ const JUNGNANG_EXTRA_INCLUDE_REGEX =
   /(숲해설[\s\S]{0,20}모집|유아숲[\s\S]{0,20}모집)/i;
 
 module.exports = {
-  version: '2026-04-15.local-gov-v7-p3-gangbuk-title-fix',
+  version: '2026-04-15.local-gov-v6-p2-reviewed-fp-block',
   source_group: 'seoul_gu_direct_8',
   source_system: 'local_gov',
 
@@ -95,7 +95,7 @@ module.exports = {
         'i'
       ),
       notes:
-        '강북구는 egov형 상세 페이지에서 제목 필드와 메타영역(고시공고구분/고시공고번호/담당부서/전화번호/작성일/첨부)이 섞여 내려오는 경우가 있어, 제목 필드 우선 추출과 메타 제거 보정을 적용. 체납자/결산서/후원금 등 비공고성 문서는 계속 exclude.',
+        '강북구는 실제 상세 링크가 있는 egov형 리스트. 공고성 키워드는 공통 include를 따르고, 체납자/결산서/후원금 등 비공고성 문서를 추가 exclude.',
     },
 
     {
@@ -119,7 +119,10 @@ module.exports = {
         bbs_no: '663',
       },
       include_regex: COMMON_INCLUDE_REGEX,
-      exclude_regex: COMMON_EXCLUDE_REGEX,
+      exclude_regex: new RegExp(
+        `${COMMON_EXCLUDE_REGEX.source}|${SEOCHO_EXTRA_EXCLUDE_REGEX.source}`,
+        'i'
+      ),
       notes:
         '구로구는 상세/첨부 seed 중심으로 시작. 평가위원 공개모집, 제안요청서, 입찰·용역 계열은 유지하고 보고서·회의록류는 공통 exclude로 차단.',
     },
@@ -169,10 +172,7 @@ module.exports = {
         `${COMMON_INCLUDE_REGEX.source}|${SEOCHO_EXTRA_INCLUDE_REGEX.source}`,
         'i'
       ),
-      exclude_regex: new RegExp(
-        `${COMMON_EXCLUDE_REGEX.source}|${SEOCHO_EXTRA_EXCLUDE_REGEX.source}`,
-        'i'
-      ),
+      exclude_regex: COMMON_EXCLUDE_REGEX,
       notes:
         'cbIdx=364는 결과공개/평가위원 모집성 게시물이 섞여 있어 seed_detail_urls를 우선 활용. 모아타운은 공고/모집/공모 문맥일 때만 포함하고, exact title=협상에 의한 계약 및 평가위원 모집류는 제외.',
     },

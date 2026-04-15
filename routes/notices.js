@@ -199,12 +199,16 @@ function buildSourceSystemFilter(source) {
 
   // 정책:
   // seoul_board = 서울시·구청 게시판
-  // 현재 구청 원문 공고는 local_gov 로 저장되어 있으므로
-  // seoul_board 요청 시 local_gov 도 함께 조회한다.
+  // local_gov 는 서울 구청 원문 저장용이므로 seoul_board 요청 시 함께 조회한다.
   if (source === 'seoul_board') {
     return {
       [Op.in]: ['seoul_board', 'local_gov']
     };
+  }
+
+  // province_gov = 지방·도청 게시판
+  if (source === 'province_gov') {
+    return 'province_gov';
   }
 
   return source;
@@ -213,8 +217,7 @@ function buildSourceSystemFilter(source) {
 function mapResponseSourceSystem(sourceSystem, requestedSource = '') {
   // 정책:
   // public API 에서는 local_gov 를 서울시·구청 게시판(seoul_board)로 노출한다.
-  // - source=seoul_board 요청 시: local_gov -> seoul_board
-  // - source 미지정(전체 조회) 시에도 public 표시는 seoul_board 로 통일
+  // province_gov 는 별도 공개 소스로 유지한다.
   if (sourceSystem === 'local_gov' && (!requestedSource || requestedSource === 'seoul_board')) {
     return 'seoul_board';
   }
@@ -236,6 +239,17 @@ function deriveSourceLabel(n, requestedSource = '') {
     if (/jungnang\.go\.kr/i.test(detailUrl)) return '중랑구';
     if (/gangseo\.seoul\.kr/i.test(detailUrl)) return '강서구';
     return '서울시·구청';
+  }
+
+  if (publicSource === 'province_gov') {
+    if (/gg\.go\.kr/i.test(detailUrl)) return '경기도';
+    if (/chungbuk\.go\.kr/i.test(detailUrl)) return '충청북도';
+    if (/chungnam\.go\.kr/i.test(detailUrl)) return '충청남도';
+    if (/jeonbuk\.go\.kr/i.test(detailUrl)) return '전북특별자치도';
+    if (/jeonnam\.go\.kr/i.test(detailUrl) || /governor\.jeonnam\.go\.kr/i.test(detailUrl)) return '전라남도';
+    if (/gb\.go\.kr/i.test(detailUrl) || /news\.gyeongbuk\.go\.kr/i.test(detailUrl)) return '경상북도';
+    if (/state\.gwd\.go\.kr/i.test(detailUrl)) return '강원특별자치도';
+    return '지방·도청';
   }
 
   if (publicSource === 'g2b_api') return '나라장터';
@@ -433,8 +447,10 @@ router.get('/stats', async (req, res) => {
       // 현재 구청 원문 공고는 local_gov 로 저장되므로 함께 합산
       seoul: (map.seoul_board || 0) + (map.local_gov || 0),
       contract: map.seoul_contract || 0,
+      province: map.province_gov || 0,
       // 내부 호환용으로 유지
       local_gov: map.local_gov || 0,
+      province_gov: map.province_gov || 0,
       total
     };
 

@@ -19,7 +19,7 @@ const Notice = sequelize.define('Notice', {
     defaultValue: '00'
   },
   source_system: {
-    type: DataTypes.ENUM('g2b_api', 'seoul_board', 'seoul_contract', 'nonghyup', 'local_gov'),
+    type: DataTypes.ENUM('g2b_api', 'seoul_board', 'seoul_contract', 'nonghyup', 'local_gov', 'province_gov'),
     allowNull: false
   },
 

@@ -13,10 +13,10 @@ try {
 }
 
 const Notice = require('../models/Notice');
-const sourceMap = require('../collectors/local-gov/sources');
+const sourceMap = require('../collectors/province-gov/sources');
 const { buildVisibilityMeta } = require('../utils/notice-visibility');
 
-const SOURCE_SYSTEM = 'local_gov';
+const SOURCE_SYSTEM = 'province_gov';
 
 const HTTP_AGENT = new http.Agent({
   keepAlive: true,
@@ -46,8 +46,8 @@ const STRONG_LIST_INCLUDE_REGEX =
 const STRONG_BODY_FALLBACK_REGEX =
   /(입찰공고|입찰에\s*부치는\s*사항|제안요청서|제안서\s*제출|협상에\s*의한\s*계약|수행기관\s*지정\s*공고|안전점검\s*수행기관|위탁운영기관\s*모집|수탁기관\s*모집|공개\s*모집|모집\s*공고|공모사업\s*공고|지방보조사업자\s*모집|사업자\s*모집)/i;
 
-const LOCAL_GOV_DATE_WINDOW_GRACE_DAYS = Number(
-  process.env.LOCAL_GOV_DATE_WINDOW_GRACE_DAYS || 14
+const PROVINCE_GOV_DATE_WINDOW_GRACE_DAYS = Number(
+  process.env.PROVINCE_GOV_DATE_WINDOW_GRACE_DAYS || 14
 );
 
 function sleep(ms) {
@@ -276,6 +276,12 @@ function isGenericPortalTitle(title = '') {
     /중랑소식<중랑소개<중랑구청/,
     /Gang-buk 강북소개/,
     /새로운 변화 행복한 용산/,
+    /새로운\s*강원!?\s*특별\s*자치시대!?/,
+    /^충청남도\s*누리집(?:\(홈페이지\))?$/i,
+    /대한민국\s*중심에\s*서다\s*충청북도\s*홈페이지/,
+    /^전북특별자치도$/i,
+    /^도정마당$/i,
+    /^알림마당$/i,
     /대외수상평가\s*-->/,
     /강북구민을 위한 신속하고 편리한 민원처리를 위해 최선을 다하겠습니다/,
     /구정비전/,
@@ -310,6 +316,7 @@ function extractTitle(html) {
     /<div[^>]*class="[^"]*(?:title|subject|board_tit|view_tit|tit|bbsTitle|viewTitle)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
     /<strong[^>]*class="[^"]*(?:title|subject|tit)[^"]*"[^>]*>([\s\S]*?)<\/strong>/i,
     /<span[^>]*class="[^"]*(?:title|subject|tit)[^"]*"[^>]*>([\s\S]*?)<\/span>/i,
+    /<p[^>]*class="[^"]*(?:title|subject|tit|view_tit|board_tit)[^"]*"[^>]*>([\s\S]*?)<\/p>/i,
   ];
 
   for (const re of patterns) {
@@ -543,6 +550,21 @@ function extractLinksForEgovList(html, source) {
   return dedupeByHref(items);
 }
 
+function extractLinksForFilteredBoardList(html, source) {
+  const baseUrl = source.list_url || source.detail_hint?.entry_url || '';
+  const anchors = extractAnchorsWithAttrs(html, baseUrl);
+  const itemPattern = source.detail_hint?.item_link_pattern || null;
+
+  const items = anchors
+    .map((a) => ({
+      href: a.href || extractHrefFromOnclick(a.onclick, baseUrl),
+      text: a.text,
+    }))
+    .filter((a) => a.href && (!itemPattern || itemPattern.test(a.href)));
+
+  return dedupeByHref(filterItemsByTitleRules(items, source));
+}
+
 function extractLinksForYongsanHealth(html, source) {
   const baseUrl = source.list_url || source.detail_hint?.entry_url || '';
   const anchors = extractAnchorsWithAttrs(html, baseUrl);
@@ -627,6 +649,13 @@ function extractCandidateLinksFromList(html, source) {
       return extractLinksForSeocho(html, source);
     case 'yongsan_health_bbs_list':
       return extractLinksForYongsanHealth(html, source);
+    case 'gyeonggi_board_list':
+    case 'chungbuk_gosi_list':
+    case 'chungnam_province_list':
+    case 'jeonbuk_board_list':
+    case 'jeonnam_board_list':
+    case 'gangwon_notification_list':
+      return extractLinksForFilteredBoardList(html, source);
     case 'seed_detail_and_attachment':
     case 'seed_detail_notice':
     case 'jungnang_portal_bbs_seed':
@@ -721,7 +750,7 @@ async function collectGangseoFallbackLinks(source, options = {}) {
           }
         }
       } catch (err) {
-        console.error(`[LOCAL GOV] 강서구 fallback 목록 요청 실패 — ${board.baseUrl}`, err.message);
+        console.error(`[PROVINCE GOV] 강서구 fallback 목록 요청 실패 — ${board.baseUrl}`, err.message);
       }
 
       if (requestDelayMs > 0) {
@@ -767,7 +796,7 @@ async function collectCandidateLinks(source, options = {}) {
         if (links.length) links.forEach((item) => push(typeof item === 'string' ? item : item.href));
         if (requestDelayMs > 0) await sleep(requestDelayMs);
       } catch (err) {
-        console.error(`[LOCAL GOV] 목록 요청 실패 — ${source.key} ${pageUrl}`, err.message);
+        console.error(`[PROVINCE GOV] 목록 요청 실패 — ${source.key} ${pageUrl}`, err.message);
       }
     }
   }
@@ -898,7 +927,7 @@ function getDateWindowGraceDays(options = {}) {
     return optionGrace;
   }
 
-  const envGrace = Number(LOCAL_GOV_DATE_WINDOW_GRACE_DAYS);
+  const envGrace = Number(PROVINCE_GOV_DATE_WINDOW_GRACE_DAYS);
   if (Number.isFinite(envGrace) && envGrace >= 0) {
     return envGrace;
   }
@@ -1004,10 +1033,14 @@ function extractStableId(detailUrl, source) {
     /[?&]nttId=(\d+)/i,
     /[?&]nttNo=(\d+)/i,
     /[?&]bcIdx=(\d+)/i,
+    /[?&]bIdx=(\d+)/i,
     /[?&]idx=(\d+)/i,
     /[?&]sdmBoardSeq=(\d+)/i,
     /[?&]id=(\d+)/i,
     /[?&]seq=(\d+)/i,
+    /[?&]articleSeq=(\d+)/i,
+    /[?&]dataSid=(\d+)/i,
+    /[?&]no=(\d+)/i,
   ];
 
   for (const re of qsPatterns) {
@@ -1165,6 +1198,12 @@ function parseDetailByType(html, detailUrl, source) {
     case 'yongsan_health_bbs_list':
     case 'jungnang_portal_bbs_seed':
     case 'legacy_detail_seed':
+    case 'gyeonggi_board_list':
+    case 'chungbuk_gosi_list':
+    case 'chungnam_province_list':
+    case 'jeonbuk_board_list':
+    case 'jeonnam_board_list':
+    case 'gangwon_notification_list':
     default:
       return parseDetailGeneric(html, detailUrl, source);
   }
@@ -1342,7 +1381,7 @@ async function crawlSource(source, options = {}) {
       else savedUpdated += 1;
     } catch (err) {
       errors += 1;
-      console.error(`[LOCAL GOV] 상세 파싱 실패 — ${source.key} ${detailUrl}`, err.message);
+      console.error(`[PROVINCE GOV] 상세 파싱 실패 — ${source.key} ${detailUrl}`, err.message);
     }
 
     if (requestDelayMs > 0) {
@@ -1352,7 +1391,7 @@ async function crawlSource(source, options = {}) {
 
   if (keywordDropSamples.length > 0) {
     console.log(
-      `[LOCAL GOV] ${source.district_name} keyword 탈락 샘플 — ${keywordDropSamples
+      `[PROVINCE GOV] ${source.district_name} keyword 탈락 샘플 — ${keywordDropSamples
         .map((s, idx) => `#${idx + 1}[${s.reason}] ${s.title}`)
         .join(' | ')}`
     );
@@ -1360,7 +1399,7 @@ async function crawlSource(source, options = {}) {
 
   if (genericTitleDropSamples.length > 0) {
     console.log(
-      `[LOCAL GOV] ${source.district_name} generic title 샘플 — ${genericTitleDropSamples
+      `[PROVINCE GOV] ${source.district_name} generic title 샘플 — ${genericTitleDropSamples
         .map((title, idx) => `#${idx + 1} ${title}`)
         .join(' | ')}`
     );
@@ -1396,7 +1435,7 @@ async function crawl(options = {}) {
   const dateWindow = buildDateWindow(options);
 
   console.log(
-    `[LOCAL GOV] 수집 시작 — 대상 ${targetSources.length}개 구청 (${targetSources
+    `[PROVINCE GOV] 수집 시작 — 대상 ${targetSources.length}개 구청 (${targetSources
       .map((s) => s.key)
       .join(', ')})${
       options.lookbackDays ? ` / 최근 ${Number(options.lookbackDays)}일` : ''
@@ -1438,13 +1477,13 @@ async function crawl(options = {}) {
       droppedByGenericTitle += r.droppedByGenericTitle || 0;
 
       console.log(
-        `[LOCAL GOV] ${source.district_name} 완료 — parsed=${r.parsed} kept=${r.kept} new=${r.savedNew} updated=${r.savedUpdated} errors=${r.errors} droppedByDate=${r.droppedByDate || 0} droppedByKeyword=${r.droppedByKeyword || 0} droppedByInactive=${r.droppedByInactive || 0} droppedByEmpty=${r.droppedByEmpty || 0} droppedByGenericTitle=${r.droppedByGenericTitle || 0}${
+        `[PROVINCE GOV] ${source.district_name} 완료 — parsed=${r.parsed} kept=${r.kept} new=${r.savedNew} updated=${r.savedUpdated} errors=${r.errors} droppedByDate=${r.droppedByDate || 0} droppedByKeyword=${r.droppedByKeyword || 0} droppedByInactive=${r.droppedByInactive || 0} droppedByEmpty=${r.droppedByEmpty || 0} droppedByGenericTitle=${r.droppedByGenericTitle || 0}${
           r.dateWindow ? ` period=${r.dateWindow}` : ''
         }`
       );
     } catch (err) {
       errors += 1;
-      console.error(`[LOCAL GOV] 소스 처리 실패 — ${source.key}`, err.message);
+      console.error(`[PROVINCE GOV] 소스 처리 실패 — ${source.key}`, err.message);
       results.push({
         key: source.key,
         district_name: source.district_name,
@@ -1465,7 +1504,7 @@ async function crawl(options = {}) {
   }
 
   console.log(
-    `[LOCAL GOV] 완료 — parsed=${parsed}, kept=${kept}, new=${savedNew}, updated=${savedUpdated}, errors=${errors}, droppedByDate=${droppedByDate}, droppedByKeyword=${droppedByKeyword}, droppedByInactive=${droppedByInactive}, droppedByEmpty=${droppedByEmpty}, droppedByGenericTitle=${droppedByGenericTitle}${
+    `[PROVINCE GOV] 완료 — parsed=${parsed}, kept=${kept}, new=${savedNew}, updated=${savedUpdated}, errors=${errors}, droppedByDate=${droppedByDate}, droppedByKeyword=${droppedByKeyword}, droppedByInactive=${droppedByInactive}, droppedByEmpty=${droppedByEmpty}, droppedByGenericTitle=${droppedByGenericTitle}${
       formatDateWindowForLog(dateWindow)
         ? `, period=${formatDateWindowForLog(dateWindow)}`
         : ''

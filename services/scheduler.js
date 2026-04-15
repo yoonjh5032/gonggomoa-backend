@@ -5,11 +5,12 @@ const { Op } = require('sequelize');
 const g2bCrawler = require('./g2b-crawler');
 const seoulContractCrawler = require('./seoul-contract-crawler');
 const localGovCrawler = require('./local-gov-crawler');
+const provinceGovCrawler = require('./province-gov-crawler');
 const Notice = require('../models/Notice');
 const CollectorRunLog = require('../models/collector-run-log');
 
 const ENABLED_COLLECTOR_SOURCES = (
-  process.env.ENABLED_COLLECTOR_SOURCES || 'g2b_api,seoul_contract,local_gov'
+  process.env.ENABLED_COLLECTOR_SOURCES || 'g2b_api,seoul_contract,local_gov,province_gov'
 )
   .split(',')
   .map((v) => v.trim())
@@ -46,6 +47,18 @@ const LOCAL_GOV_STARTUP_LOOKBACK_DAYS = Number(
 const LOCAL_GOV_STARTUP_ENABLED =
   process.env.LOCAL_GOV_STARTUP_ENABLED !== 'false';
 
+// PROVINCE GOV 설정
+const PROVINCE_GOV_CRON = process.env.PROVINCE_GOV_CRON || '20,50 8-18 * * *';
+const PROVINCE_GOV_MAX_PAGES = Number(process.env.PROVINCE_GOV_MAX_PAGES || 2);
+const PROVINCE_GOV_STARTUP_MAX_PAGES = Number(
+  process.env.PROVINCE_GOV_STARTUP_MAX_PAGES || 15
+);
+const PROVINCE_GOV_STARTUP_LOOKBACK_DAYS = Number(
+  process.env.PROVINCE_GOV_STARTUP_LOOKBACK_DAYS || 60
+);
+const PROVINCE_GOV_STARTUP_ENABLED =
+  process.env.PROVINCE_GOV_STARTUP_ENABLED !== 'false';
+
 const COLLECTOR_LOG_LIMIT = Math.min(
   Math.max(Number(process.env.COLLECTOR_LOG_LIMIT || 200), 20),
   1000
@@ -67,6 +80,7 @@ let runningMinuteJob = false;
 let runningSeoulContractJob = false;
 let runningPurgeJob = false;
 let runningLocalGovJob = false;
+let runningProvinceGovJob = false;
 let runningG2bSyncJob = '';
 
 const alertCooldownMap = new Map();
@@ -107,9 +121,13 @@ const collectorMonitor = {
     kind: 'collector',
     schedules: ['0 9 * * *', '0 17 * * *'],
   }),
-  local_gov: createMonitorEntry('local_gov', '지자체 공고', {
+  local_gov: createMonitorEntry('local_gov', '서울시·구청 공고', {
     kind: 'collector',
     schedules: [LOCAL_GOV_CRON],
+  }),
+  province_gov: createMonitorEntry('province_gov', '지방·도청 공고', {
+    kind: 'collector',
+    schedules: [PROVINCE_GOV_CRON],
   }),
   purge_expired: createMonitorEntry('purge_expired', '만료 공고 삭제', {
     kind: 'maintenance',
@@ -527,7 +545,7 @@ function sendCollectorStuckAlert(entry, elapsedMs) {
 }
 
 function syncCollectorEnabledState() {
-  ['g2b_api', 'seoul_contract', 'local_gov'].forEach((key) => {
+  ['g2b_api', 'seoul_contract', 'local_gov', 'province_gov'].forEach((key) => {
     if (collectorMonitor[key]) {
       collectorMonitor[key].enabled = isSourceEnabled(key);
     }
@@ -642,6 +660,10 @@ function isCollectorRunning(key) {
 
   if (key === 'local_gov') {
     return Boolean(runningLocalGovJob);
+  }
+
+  if (key === 'province_gov') {
+    return Boolean(runningProvinceGovJob);
   }
 
   if (key === 'purge_expired') {
@@ -1176,9 +1198,91 @@ async function runLocalGovRegularCollection(reason = 'scheduled', options = {}, 
   }
 }
 
+
+async function runProvinceGovRegularCollection(reason = 'scheduled', options = {}, context = {}) {
+  const configuredKeys = parseCsvList(process.env.PROVINCE_GOV_KEYS);
+  const targetKeys =
+    Array.isArray(options.keys) && options.keys.length
+      ? options.keys
+      : configuredKeys.length
+      ? configuredKeys
+      : undefined;
+
+  const maxPages =
+    Number(options.maxPages) > 0
+      ? Number(options.maxPages)
+      : PROVINCE_GOV_MAX_PAGES;
+
+  const lookbackDays =
+    Number(options.lookbackDays) > 0 ? Number(options.lookbackDays) : 0;
+
+  const logContext = {
+    triggerType: context.triggerType || (reason === 'manual' ? 'manual' : reason === 'startup' ? 'startup' : 'scheduled'),
+    actor: context.actor,
+    requestPayload: {
+      ...(Number(maxPages) > 0 ? { maxPages } : {}),
+      ...(lookbackDays > 0 ? { lookbackDays } : {}),
+      ...(targetKeys?.length ? { keys: targetKeys } : {}),
+    },
+    metadata: {
+      ...(context.metadata || {}),
+      reason,
+      maxPages,
+      ...(lookbackDays > 0 ? { lookbackDays } : {}),
+      ...(targetKeys?.length ? { keys: targetKeys } : {}),
+    },
+  };
+
+  if (!isSourceEnabled('province_gov')) {
+    console.log('[스케줄러] province_gov 비활성화 상태');
+    markMonitorSkipped('province_gov', 'source_disabled', reason, logContext);
+    return;
+  }
+
+  if (runningProvinceGovJob) {
+    console.log('[스케줄러] province_gov 수집 이미 실행 중, 건너뜀');
+    markMonitorSkipped('province_gov', 'already_running', reason, logContext);
+    return;
+  }
+
+  runningProvinceGovJob = true;
+  markMonitorStart('province_gov', reason, logContext);
+
+  try {
+    console.log(
+      `[스케줄러] province_gov 정기 수집 실행 (${reason}) — maxPages=${maxPages}${
+        lookbackDays > 0 ? ` lookbackDays=${lookbackDays}` : ''
+      }${targetKeys?.length ? ` keys=${targetKeys.join(',')}` : ''}`
+    );
+
+    await purgeExpiredNotices({
+      triggerType: 'maintenance',
+      metadata: { parentCollector: 'province_gov', parentJob: reason },
+    });
+
+    const result = await provinceGovCrawler.crawl({
+      maxPages,
+      ...(lookbackDays > 0 ? { lookbackDays } : {}),
+      ...(targetKeys?.length ? { keys: targetKeys } : {}),
+    });
+
+    console.log(
+      `[스케줄러] province_gov 정기 수집 완료 (${reason}) — parsed=${result.parsed} kept=${result.kept} new=${result.newCount} updated=${result.updatedCount} errors=${result.errorCount}`
+    );
+    markMonitorSuccess('province_gov', reason, result, logContext);
+    return result;
+  } catch (err) {
+    console.error(`[스케줄러] province_gov 정기 수집 실패 (${reason})`, err.message);
+    markMonitorError('province_gov', reason, err, null, logContext);
+    throw err;
+  } finally {
+    runningProvinceGovJob = false;
+  }
+}
+
 function runCollectorNow(key, payload = {}, actor = null) {
   const collectorKey = String(key || '').trim();
-  const allowedKeys = ['g2b_api', 'seoul_contract', 'local_gov'];
+  const allowedKeys = ['g2b_api', 'seoul_contract', 'local_gov', 'province_gov'];
 
   if (!allowedKeys.includes(collectorKey)) {
     return {
@@ -1258,6 +1362,23 @@ function runCollectorNow(key, payload = {}, actor = null) {
         metadata: { requestedBy: 'admin_api' },
       }
     );
+  } else if (collectorKey === 'province_gov') {
+    taskPromise = runProvinceGovRegularCollection(
+      'manual',
+      {
+        ...(Number(options.maxPages) > 0 ? { maxPages: Number(options.maxPages) } : {}),
+        ...(Number(options.lookbackDays) > 0
+          ? { lookbackDays: Number(options.lookbackDays) }
+          : {}),
+        ...(Array.isArray(options.keys) && options.keys.length ? { keys: options.keys } : {}),
+      },
+      {
+        triggerType: 'manual',
+        actor: actorContext,
+        requestPayload: options,
+        metadata: { requestedBy: 'admin_api' },
+      }
+    );
   }
 
   Promise.resolve(taskPromise).catch((err) => {
@@ -1294,6 +1415,20 @@ async function initialLoad() {
         }
       );
     }
+
+    if (PROVINCE_GOV_STARTUP_ENABLED) {
+      await runProvinceGovRegularCollection(
+        'startup',
+        {
+          maxPages: PROVINCE_GOV_STARTUP_MAX_PAGES,
+          lookbackDays: PROVINCE_GOV_STARTUP_LOOKBACK_DAYS,
+        },
+        {
+          triggerType: 'startup',
+          metadata: { phase: 'initial_load' },
+        }
+      );
+    }
   } catch (err) {
     console.error('[스케줄러] 초기 로드 실패', err.message);
   }
@@ -1317,6 +1452,10 @@ function start() {
   });
 
   cron.schedule(LOCAL_GOV_CRON, () => runLocalGovRegularCollection('scheduled'), {
+    timezone: 'Asia/Seoul',
+  });
+
+  cron.schedule(PROVINCE_GOV_CRON, () => runProvinceGovRegularCollection('scheduled'), {
     timezone: 'Asia/Seoul',
   });
 
@@ -1345,6 +1484,10 @@ function start() {
   console.log(
     `[스케줄러] local_gov startup 보정수집 설정 — lookbackDays=${LOCAL_GOV_STARTUP_LOOKBACK_DAYS}, maxPages=${LOCAL_GOV_STARTUP_MAX_PAGES}`
   );
+  console.log(`[스케줄러] province_gov 정기 수집 등록 완료 (${PROVINCE_GOV_CRON})`);
+  console.log(
+    `[스케줄러] province_gov startup 보정수집 설정 — lookbackDays=${PROVINCE_GOV_STARTUP_LOOKBACK_DAYS}, maxPages=${PROVINCE_GOV_STARTUP_MAX_PAGES}`
+  );
   console.log('[스케줄러] 만료 삭제 스케줄 등록 완료 (매일 00:05 KST)');
   console.log('[스케줄러] 서울 계약마당 스케줄 등록 완료 (매일 09:00, 17:00 KST)');
   console.log(
@@ -1371,4 +1514,5 @@ module.exports = {
   runG2bStartupBackfill,
   runG2bOpenNoticeResync,
   runLocalGovRegularCollection,
+  runProvinceGovRegularCollection,
 };
