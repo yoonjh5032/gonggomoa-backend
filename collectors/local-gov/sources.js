@@ -16,16 +16,19 @@ const GANGBUK_EXTRA_EXCLUDE_REGEX =
   /(체납자|결산서|후원금|주민등록\s*무단전출|이전글|다음글|공공저작물은\s*공공누리|출처표시|상업적이용금지|변경금지|격자\s*공고문|공고문\s*\d+\s*부\.?\s*끝\.?)/i;
 
 const YONGSAN_EXTRA_EXCLUDE_REGEX =
-  /(금연지도원\s*모집|동행일자리|사서\s*채용|시간선택제임기제|기간제근로자|통합돌봄\s*지원사업|건강장수센터)/i;
+  /(금연지도원\s*모집|동행일자리|사서\s*채용|시간선택제임기제|기간제근로자|통합돌봄\s*지원사업|건강장수센터|골목형상점가\s*지정\s*공고)/i;
 
 const SEOCHO_EXTRA_INCLUDE_REGEX =
   /(모아타운[\s\S]{0,20}(공고|모집|공모))/i;
+
+const SEOCHO_EXTRA_EXCLUDE_REGEX =
+  /(^협상에\s*의한\s*계약$|평가위원\s*모집)/i;
 
 const JUNGNANG_EXTRA_INCLUDE_REGEX =
   /(숲해설[\s\S]{0,20}모집|유아숲[\s\S]{0,20}모집)/i;
 
 module.exports = {
-  version: '2026-04-15.local-gov-v5-p1-tighten',
+  version: '2026-04-15.local-gov-v6-p2-reviewed-fp-block',
   source_group: 'seoul_gu_direct_8',
   source_system: 'local_gov',
 
@@ -116,7 +119,10 @@ module.exports = {
         bbs_no: '663',
       },
       include_regex: COMMON_INCLUDE_REGEX,
-      exclude_regex: COMMON_EXCLUDE_REGEX,
+      exclude_regex: new RegExp(
+        `${COMMON_EXCLUDE_REGEX.source}|${SEOCHO_EXTRA_EXCLUDE_REGEX.source}`,
+        'i'
+      ),
       notes:
         '구로구는 상세/첨부 seed 중심으로 시작. 평가위원 공개모집, 제안요청서, 입찰·용역 계열은 유지하고 보고서·회의록류는 공통 exclude로 차단.',
     },
@@ -168,7 +174,7 @@ module.exports = {
       ),
       exclude_regex: COMMON_EXCLUDE_REGEX,
       notes:
-        'cbIdx=364는 결과공개 위주이므로 seed_detail_urls를 우선 활용. 모아타운은 단독 키워드가 아니라 공고/모집/공모 문맥일 때만 포함하도록 축소.',
+        'cbIdx=364는 결과공개/평가위원 모집성 게시물이 섞여 있어 seed_detail_urls를 우선 활용. 모아타운은 공고/모집/공모 문맥일 때만 포함하고, exact title=협상에 의한 계약 및 평가위원 모집류는 제외.',
     },
 
     {
@@ -195,7 +201,7 @@ module.exports = {
         'i'
       ),
       notes:
-        '용산구는 전체 대신 공고(optn1=01) 탭 우선. 채용성·생활정보성 노이즈가 많아 exclude를 가장 강하게 적용.',
+        '용산구는 전체 대신 공고(optn1=01) 탭 우선. 채용성·생활정보성 노이즈가 많아 exclude를 가장 강하게 적용하고, 사용자 검토에서 오탐으로 확인된 골목형상점가 지정 공고는 재수집 제외.',
     },
 
     {

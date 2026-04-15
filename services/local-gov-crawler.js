@@ -244,6 +244,8 @@ function isSuspiciousNoticeTitle(title = '') {
     /^(붙임|첨부|별첨|서식)(?:\s|$)/,
     /^정책연구\s*용역자료$/i,
     /^용역자료$/i,
+    /^협상에\s*의한\s*계약$/i,
+    /^골목형상점가\s*지정\s*공고$/i,
   ];
 
   return suspiciousPatterns.some((re) => re.test(t));
