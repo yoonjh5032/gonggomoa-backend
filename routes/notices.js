@@ -222,6 +222,27 @@ function mapResponseSourceSystem(sourceSystem, requestedSource = '') {
   return sourceSystem;
 }
 
+function deriveSourceLabel(n, requestedSource = '') {
+  const detailUrl = String(n.detail_url || '');
+  const publicSource = mapResponseSourceSystem(n.source_system, requestedSource);
+
+  if (publicSource === 'seoul_board') {
+    if (/gwanak\.go\.kr/i.test(detailUrl)) return '관악구';
+    if (/gangbuk\.go\.kr/i.test(detailUrl)) return '강북구';
+    if (/guro\.go\.kr/i.test(detailUrl)) return '구로구';
+    if (/sdm\.go\.kr/i.test(detailUrl)) return '서대문구';
+    if (/seocho\.go\.kr/i.test(detailUrl)) return '서초구';
+    if (/yongsan\.go\.kr/i.test(detailUrl)) return '용산구';
+    if (/jungnang\.go\.kr/i.test(detailUrl)) return '중랑구';
+    if (/gangseo\.seoul\.kr/i.test(detailUrl)) return '강서구';
+    return '서울시·구청';
+  }
+
+  if (publicSource === 'g2b_api') return '나라장터';
+  if (publicSource === 'seoul_contract') return '계약마당';
+  return publicSource || '';
+}
+
 function toNoticeListItem(n, query = {}) {
   return {
     id: n.id,
@@ -234,6 +255,7 @@ function toNoticeListItem(n, query = {}) {
     published_at: n.published_at ? new Date(n.published_at).toISOString() : null,
     opening_at: n.opening_at ? new Date(n.opening_at).toISOString() : null,
     source_system: mapResponseSourceSystem(n.source_system, query.source),
+    source_label: deriveSourceLabel(n, query.source),
     detail_url: n.detail_url || '',
     createdAt: n.createdAt ? new Date(n.createdAt).toISOString() : null,
     updatedAt: n.updatedAt ? new Date(n.updatedAt).toISOString() : null
@@ -530,6 +552,7 @@ router.get('/:id', async (req, res) => {
     res.json({
       ...notice,
       source_system: mapResponseSourceSystem(notice.source_system),
+      source_label: deriveSourceLabel(notice),
       closing_at: notice.closing_at ? new Date(notice.closing_at).toISOString() : null,
       published_at: notice.published_at ? new Date(notice.published_at).toISOString() : null,
       opening_at: notice.opening_at ? new Date(notice.opening_at).toISOString() : null

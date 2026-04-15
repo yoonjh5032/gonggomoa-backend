@@ -40,6 +40,9 @@ const REQUEST_HEADERS = {
 const RELAXED_STARTUP_INCLUDE_REGEX =
   /(공고|모집|공개\s*모집|모집\s*공고|용역|입찰|재입찰|재공고|위탁|민간위탁|제안서|제안요청서|평가위원|사업자|사업자\s*모집|수탁|수탁기관|운영기관|수행기관|협상|협상에\s*의한\s*계약|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행|안전점검|지정\s*공고|제출|나라장터)/i;
 
+const STRONG_LIST_INCLUDE_REGEX =
+  /(입찰공고|모집\s*공고|공개\s*모집|사업자\s*모집|수행기관\s*지정\s*공고|안전점검\s*수행기관|민간위탁|위탁운영기관\s*모집|수탁기관\s*모집|제안요청서|제안서\s*제출|협상에\s*의한\s*계약|공모사업\s*공고|지방보조사업자\s*모집)/i;
+
 const LOCAL_GOV_DATE_WINDOW_GRACE_DAYS = Number(
   process.env.LOCAL_GOV_DATE_WINDOW_GRACE_DAYS || 14
 );
@@ -206,10 +209,26 @@ function buildListPageUrls(source, maxPages = 3) {
   return urls;
 }
 
-function isGenericPortalTitle(title = '') {
-  const t = cleanText(title)
+function normalizeCandidateTitle(title = '') {
+  return cleanText(title)
     .replace(/\s+/g, ' ')
+    .replace(/\s+-\s+정보.*$/, '')
+    .replace(/\b이전글\b[\s\S]*$/, '')
+    .replace(/\b다음글\b[\s\S]*$/, '')
+    .replace(/\b만족도조사\b[\s\S]*$/, '')
+    .replace(/\b의견입력\b[\s\S]*$/, '')
+    .replace(/\b패밀리사이트\b[\s\S]*$/, '')
+    .replace(/\b연락처\s*:\s*\d{2,4}-\d{3,4}-\d{4}[\s\S]*$/, '')
+    .replace(/\b최종업데이트\s*:\s*\d{4}-\d{2}-\d{2}[\s\S]*$/, '')
+    .replace(/본\s*공공저작물은\s*공공누리[\s\S]*$/, '')
+    .replace(/출처표시\s*\+\s*상업적이용금지\s*\+\s*변경금지[\s\S]*$/, '')
+    .replace(/전체목록의\s*번호[\s\S]*$/, '')
+    .replace(/정보를\s*제공하는\s*표이다\.?[\s\S]*$/, '')
     .trim();
+}
+
+function isGenericPortalTitle(title = '') {
+  const t = normalizeCandidateTitle(title);
   if (!t) return true;
 
   const genericPatterns = [
@@ -235,6 +254,23 @@ function isGenericPortalTitle(title = '') {
     /새로운 변화 행복한 용산/,
     /대외수상평가\s*-->/,
     /강북구민을 위한 신속하고 편리한 민원처리를 위해 최선을 다하겠습니다/,
+    /구정비전/,
+    /전체목록/,
+    /알림방/,
+    /^사업신청$/i,
+    /신고\s*절차/,
+    /정책실명제/,
+    /행정간행물/,
+    /예산\s*[·ㆍ-]?\s*결산/,
+    /주요업무계획/,
+    /조직정보/,
+    /공공데이터/,
+    /저작권정책/,
+    /발주\s*계획/,
+    /사전규격공개/,
+    /전체목록의\s*번호/,
+    /정보를\s*제공하는\s*표이다/,
+    /:\s*(?:관악|강북|구로|서초)구청$/i,
   ];
 
   return genericPatterns.some((re) => re.test(t));
@@ -255,26 +291,26 @@ function extractTitle(html) {
   for (const re of patterns) {
     const m = html.match(re);
     if (m) {
-      const v = cleanText(m[1]).replace(/\s+-\s+정보.*$/, '').trim();
+      const v = normalizeCandidateTitle(m[1]);
       if (v && !isGenericPortalTitle(v)) return v;
     }
   }
 
   const og = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
   if (og) {
-    const v = cleanText(og[1]);
+    const v = normalizeCandidateTitle(og[1]);
     if (v && !isGenericPortalTitle(v)) return v;
   }
 
   const metaTitle = html.match(/<meta[^>]+name=["']title["'][^>]+content=["']([^"']+)["']/i);
   if (metaTitle) {
-    const v = cleanText(metaTitle[1]);
+    const v = normalizeCandidateTitle(metaTitle[1]);
     if (v && !isGenericPortalTitle(v)) return v;
   }
 
   const titleTag = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   if (titleTag) {
-    const fallbackTitle = cleanText(titleTag[1]);
+    const fallbackTitle = normalizeCandidateTitle(titleTag[1]);
     if (fallbackTitle && !isGenericPortalTitle(fallbackTitle)) {
       return fallbackTitle;
     }
@@ -307,7 +343,7 @@ function extractTitleFromBody(html = '') {
   for (const re of patterns) {
     const m = body.match(re);
     if (!m) continue;
-    const candidate = cleanText(m[1]).replace(/\s+-\s+정보.*$/, '').trim();
+    const candidate = normalizeCandidateTitle(m[1]);
     if (candidate && !isGenericPortalTitle(candidate)) {
       return candidate;
     }
@@ -338,14 +374,14 @@ function buildFallbackTitleFromBody(bodyText = '', source = null) {
 
   for (const sentence of sentences) {
     if (!titleLikeRegex.test(sentence)) continue;
-    const candidate = sentence.slice(0, 120).replace(/\s+-\s+정보.*$/, '').trim();
+    const candidate = normalizeCandidateTitle(sentence.slice(0, 120));
     if (candidate && !isGenericPortalTitle(candidate)) {
       return candidate;
     }
   }
 
   if (source?.key === 'gangbuk') {
-    const candidate = body.slice(0, 120).replace(/\s+-\s+정보.*$/, '').trim();
+    const candidate = normalizeCandidateTitle(body.slice(0, 120));
     if (candidate && !isGenericPortalTitle(candidate)) {
       return candidate;
     }
@@ -456,16 +492,21 @@ function filterItemsByTitleRules(items, source) {
   const excludeRegex = source.exclude_regex || defaults.exclude_regex;
 
   return items.filter((item) => {
-    const text = cleanText(item.text || '');
+    const text = normalizeCandidateTitle(item.text || '');
     if (!text) return false;
+    if (isGenericPortalTitle(text)) return false;
 
     const includeMatched = includeRegex && includeRegex.test(text);
+    const strongIncludeMatched = STRONG_LIST_INCLUDE_REGEX.test(text);
     const relaxedMatched = RELAXED_STARTUP_INCLUDE_REGEX.test(text);
     const excludeMatched = excludeRegex && excludeRegex.test(text);
+    const weakPortalishMatched = /(절차|안내|소개|현황|계획|비전|알림방|전체목록|공공데이터|행정간행물|저작권정책)/i.test(text);
 
     if (excludeMatched) return false;
+    if (strongIncludeMatched) return true;
     if (includeMatched) return true;
-    if (relaxedMatched) return true;
+    if ((source?.key === 'gwanak' || source?.key === 'gangbuk') && !strongIncludeMatched) return false;
+    if (relaxedMatched && !weakPortalishMatched) return true;
     return false;
   });
 }
