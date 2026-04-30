@@ -38,13 +38,13 @@ const REQUEST_HEADERS = {
 };
 
 const RELAXED_STARTUP_INCLUDE_REGEX =
-  /(공고|모집|공개\s*모집|모집\s*공고|용역|입찰|재입찰|재공고|위탁|민간위탁|제안서|제안요청서|평가위원|사업자|사업자\s*모집|수탁|수탁기관|운영기관|수행기관|협상|협상에\s*의한\s*계약|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행|안전점검|지정\s*공고|제출|나라장터)/i;
+  /(공고|모집|공개\s*모집|모집\s*공고|용역|입찰|재입찰|재공고|위탁|민간위탁|제안서|제안요청서|평가위원|사업자|사업자\s*모집|수탁|수탁기관|운영기관|수행기관|협상|협상에\s*의한\s*계약|공사|조성|설계|사업|정비|교체|기술|개설|제작|사업체|대행|안전점검|지정\s*신청\s*공고|수행기관\s*지정\s*신청\s*공고|지정\s*공고|제출|나라장터)/i;
 
 const STRONG_LIST_INCLUDE_REGEX =
-  /(입찰공고|모집\s*공고|공개\s*모집|사업자\s*모집|수행기관\s*지정\s*공고|안전점검\s*수행기관|민간위탁|위탁운영기관\s*모집|수탁기관\s*모집|제안요청서|제안서\s*제출|협상에\s*의한\s*계약|공모사업\s*공고|지방보조사업자\s*모집)/i;
+  /(입찰공고|모집\s*공고|공개\s*모집|사업자\s*모집|수행기관\s*지정\s*신청\s*공고|수행기관\s*지정\s*공고|안전점검\s*수행기관|민간위탁|위탁운영기관\s*모집|수탁기관\s*모집|제안요청서|제안서\s*제출|협상에\s*의한\s*계약|공모사업\s*공고|지방보조사업자\s*모집)/i;
 
 const STRONG_BODY_FALLBACK_REGEX =
-  /(입찰공고|입찰에\s*부치는\s*사항|제안요청서|제안서\s*제출|협상에\s*의한\s*계약|수행기관\s*지정\s*공고|안전점검\s*수행기관|위탁운영기관\s*모집|수탁기관\s*모집|공개\s*모집|모집\s*공고|공모사업\s*공고|지방보조사업자\s*모집|사업자\s*모집)/i;
+  /(입찰공고|입찰에\s*부치는\s*사항|제안요청서|제안서\s*제출|협상에\s*의한\s*계약|수행기관\s*지정\s*신청\s*공고|수행기관\s*지정\s*공고|안전점검\s*수행기관|위탁운영기관\s*모집|수탁기관\s*모집|공개\s*모집|모집\s*공고|공모사업\s*공고|지방보조사업자\s*모집|사업자\s*모집)/i;
 
 const LOCAL_GOV_DATE_WINDOW_GRACE_DAYS = Number(
   process.env.LOCAL_GOV_DATE_WINDOW_GRACE_DAYS || 14
@@ -212,8 +212,21 @@ function buildListPageUrls(source, maxPages = 3) {
   return urls;
 }
 
+function stripEgovTitleMetaNoise(text = '') {
+  return String(text || '')
+    .replace(/\b고시공고구분\b\s*[^\n]{0,80}(?=(?:\b고시공고번호\b|\b담당부서\b|\b전화번호\b|\b작성일\b|\b조회수\b|\b첨부\b|$))/gi, ' ')
+    .replace(/\b고시공고번호\b\s*[^\n]{0,120}(?=(?:\b담당부서\b|\b전화번호\b|\b작성일\b|\b조회수\b|\b첨부\b|$))/gi, ' ')
+    .replace(/\b담당부서\b\s*[^\n]{0,50}(?=(?:\b전화번호\b|\b작성일\b|\b조회수\b|\b첨부\b|$))/gi, ' ')
+    .replace(/\b전화번호\b\s*[^\n]{0,50}(?=(?:\b작성일\b|\b조회수\b|\b첨부\b|$))/gi, ' ')
+    .replace(/\b작성일\b\s*\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}(?=(?:\b조회수\b|\b첨부\b|$))/gi, ' ')
+    .replace(/\b조회수\b\s*\d+(?=(?:\b첨부\b|$))/gi, ' ')
+    .replace(/\b첨부\b\s*[^(가-힣A-Za-z0-9]{0,5}(?=(?:입찰공고|건설공사|용역|제안서|수행기관|안전점검|사업자|공개\s*모집|모집\s*공고))/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function normalizeCandidateTitle(title = '') {
-  return cleanText(title)
+  return stripEgovTitleMetaNoise(cleanText(title))
     .replace(/\s+/g, ' ')
     .replace(/\s*-->\s*[\s\S]*$/, '')
     .replace(/\s+-\s+정보.*$/, '')
@@ -229,6 +242,41 @@ function normalizeCandidateTitle(title = '') {
     .replace(/전체목록의\s*번호[\s\S]*$/, '')
     .replace(/정보를\s*제공하는\s*표이다\.?[\s\S]*$/, '')
     .trim();
+}
+
+function containsTitleMetaNoise(title = '') {
+  return /(고시공고구분|고시공고번호|담당부서|전화번호|작성일|조회수|첨부)/.test(
+    String(title || '')
+  );
+}
+
+function scoreTitleCandidate(title = '') {
+  const t = normalizeCandidateTitle(title);
+  if (!t) return -999;
+
+  let score = 0;
+  if (/수행기관\s*지정\s*신청\s*공고/i.test(t)) score += 14;
+  if (/수행기관\s*지정\s*공고/i.test(t)) score += 10;
+  if (/입찰공고|제안요청서|모집\s*공고|공개\s*모집|협상에\s*의한\s*계약/i.test(t)) score += 6;
+  if (/\([^()]{2,80}\)/.test(t)) score += 3;
+  if (containsTitleMetaNoise(title)) score -= 20;
+  if (isGenericPortalTitle(t) || isSuspiciousNoticeTitle(t)) score -= 50;
+  if (t.length > 120) score -= 8;
+  if (t.length <= 10) score -= 5;
+
+  return score - Math.floor(t.length / 40);
+}
+
+function pickBestTitleCandidate(candidates = []) {
+  const normalized = candidates
+    .map((v) => normalizeCandidateTitle(v))
+    .filter(Boolean)
+    .filter((v) => !isGenericPortalTitle(v));
+
+  if (!normalized.length) return '';
+
+  return normalized
+    .sort((a, b) => scoreTitleCandidate(b) - scoreTitleCandidate(a) || a.length - b.length)[0];
 }
 
 function isSuspiciousNoticeTitle(title = '') {
@@ -306,7 +354,9 @@ function extractTitle(html) {
     /<h2[^>]*>([\s\S]*?)<\/h2>/i,
     /<h3[^>]*>([\s\S]*?)<\/h3>/i,
     /<caption[^>]*>([\s\S]*?)<\/caption>/i,
-    /<th[^>]*scope=["']row["'][^>]*>\s*제목\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i,
+    /<th[^>]*scope=["']row["'][^>]*>\s*(?:제목|공고명|고시공고명)\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i,
+    /<th[^>]*>\s*(?:제목|공고명|고시공고명)\s*<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/i,
+    /<dt[^>]*>\s*(?:제목|공고명|고시공고명)\s*<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/i,
     /<div[^>]*class="[^"]*(?:title|subject|board_tit|view_tit|tit|bbsTitle|viewTitle)[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
     /<strong[^>]*class="[^"]*(?:title|subject|tit)[^"]*"[^>]*>([\s\S]*?)<\/strong>/i,
     /<span[^>]*class="[^"]*(?:title|subject|tit)[^"]*"[^>]*>([\s\S]*?)<\/span>/i,
@@ -357,23 +407,24 @@ function extractTitleFromBody(html = '') {
   if (!body) return '';
 
   const patterns = [
-    /([「『\[]?[^「『\[\]]{4,120}?(?:입찰공고|공개 모집 공고|모집 공고|지정 공고))/,
-    /([「『\[]?[^「『\[\]]{4,120}?제안서 평가위원\(후보자\)[^「『\[\]]{0,40})/,
-    /([「『\[]?[^「『\[\]]{4,120}?용역[^「『\[\]]{0,40}공고)/,
-    /([「『\[]?[^「『\[\]]{4,120}?사업자[^「『\[\]]{0,30}모집[^「『\[\]]{0,20})/,
-    /([「『\[]?[^「『\[\]]{4,120}?수행기관 지정 공고)/,
+    /([「『\[]?[^「『\[\]]{4,140}?수행기관\s*지정\s*신청\s*공고(?:\([^「『\[\]]{1,80}\))?)/gi,
+    /([「『\[]?[^「『\[\]]{4,140}?지정\s*신청\s*공고(?:\([^「『\[\]]{1,80}\))?)/gi,
+    /([「『\[]?[^「『\[\]]{4,140}?(?:입찰공고|공개 모집 공고|모집 공고|지정 공고)(?:\([^「『\[\]]{1,80}\))?)/gi,
+    /([「『\[]?[^「『\[\]]{4,140}?제안서 평가위원\(후보자\)[^「『\[\]]{0,40})/gi,
+    /([「『\[]?[^「『\[\]]{4,140}?용역[^「『\[\]]{0,40}공고)/gi,
+    /([「『\[]?[^「『\[\]]{4,140}?사업자[^「『\[\]]{0,30}모집[^「『\[\]]{0,20})/gi,
+    /([「『\[]?[^「『\[\]]{4,140}?수행기관\s*지정\s*공고(?:\([^「『\[\]]{1,80}\))?)/gi,
   ];
 
+  const candidates = [];
+
   for (const re of patterns) {
-    const m = body.match(re);
-    if (!m) continue;
-    const candidate = normalizeCandidateTitle(m[1]);
-    if (candidate && !isGenericPortalTitle(candidate)) {
-      return candidate;
+    for (const m of body.matchAll(re)) {
+      if (m && m[1]) candidates.push(m[1]);
     }
   }
 
-  return '';
+  return pickBestTitleCandidate(candidates);
 }
 
 function buildFallbackTitleFromBody(bodyText = '', source = null) {
@@ -394,11 +445,11 @@ function buildFallbackTitleFromBody(bodyText = '', source = null) {
     .filter(Boolean);
 
   const titleLikeRegex =
-    /(입찰공고|입찰|용역|제안서|평가위원|공개\s*모집|모집\s*공고|위탁|수탁기관|운영기관|수행기관|사업자\s*모집|협상에\s*의한\s*계약|안전점검|지정\s*공고)/i;
+    /(입찰공고|입찰|용역|제안서|평가위원|공개\s*모집|모집\s*공고|위탁|수탁기관|운영기관|수행기관|사업자\s*모집|협상에\s*의한\s*계약|안전점검|지정\s*신청\s*공고|지정\s*공고)/i;
 
   for (const sentence of sentences) {
     if (!titleLikeRegex.test(sentence)) continue;
-    const candidate = normalizeCandidateTitle(sentence.slice(0, 120));
+    const candidate = normalizeCandidateTitle(sentence.slice(0, 160));
     if (candidate && !isGenericPortalTitle(candidate)) {
       return candidate;
     }
@@ -407,18 +458,47 @@ function buildFallbackTitleFromBody(bodyText = '', source = null) {
   return '';
 }
 
+function extractExplicitTitleField(html = '') {
+  return pickBestTitleCandidate([
+    extractFieldValue(html, ['제목', '공고명', '고시공고명']),
+  ]);
+}
+
+function extractTitleForEgovNotice(html = '', source = null) {
+  const bodyText = extractBodyText(html);
+  const candidates = [
+    extractExplicitTitleField(html),
+    extractTitle(html),
+    extractTitleFromBody(bodyText),
+  ];
+
+  const best = pickBestTitleCandidate(candidates);
+  if (best) return best;
+
+  const normalized = normalizeCandidateTitle(extractTitle(html));
+  if (normalized && !isGenericPortalTitle(normalized)) return normalized;
+
+  return '';
+}
+
 function resolveParsedTitle(parsedDetail = {}, source = null) {
-  const normalizedTitle = cleanText(parsedDetail.title || '');
-  if (normalizedTitle && !isGenericPortalTitle(normalizedTitle)) {
-    return normalizedTitle;
+  const directCandidate = normalizeCandidateTitle(parsedDetail.title || '');
+  const fallbackTitle = buildFallbackTitleFromBody(parsedDetail.bodyText || '', source);
+
+  if (source?.parser_type === 'egov_gosi_list') {
+    const best = pickBestTitleCandidate([directCandidate, fallbackTitle]);
+    if (best) return best;
   }
 
-  const fallbackTitle = buildFallbackTitleFromBody(parsedDetail.bodyText || '', source);
+  if (directCandidate && !isGenericPortalTitle(directCandidate)) {
+    return directCandidate;
+  }
+
   if (fallbackTitle) {
     return fallbackTitle;
   }
 
-  return normalizedTitle;
+  return directCandidate;
 }
 
 function extractAnchorsWithAttrs(html, baseUrl) {
@@ -1129,7 +1209,7 @@ function shouldKeepNotice(source, title, bodyText, options = {}) {
 }
 
 function parseDetailGeneric(html, detailUrl, source) {
-  const title = extractTitle(html);
+  const title = source?.parser_type === 'egov_gosi_list' ? extractTitleForEgovNotice(html, source) || extractTitle(html) : extractTitle(html);
   const bodyText = extractBodyText(html);
   const publishedAt = extractPublishedAt(html);
   const closingAt = extractClosingAt(html);
@@ -1159,6 +1239,7 @@ function parseDetailByType(html, detailUrl, source) {
   switch (source.parser_type) {
     case 'gwanak_bbsnew_list':
     case 'egov_gosi_list':
+      return parseDetailGeneric(html, detailUrl, source);
     case 'seed_detail_and_attachment':
     case 'seed_detail_notice':
     case 'seocho_ex_bbs_list':
