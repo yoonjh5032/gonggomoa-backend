@@ -122,6 +122,14 @@ function buildBaseNoticeWhere(now = new Date()) {
   };
 }
 
+function buildSeoulBoardNoiseExclusion() {
+  return {
+    title: {
+      [Op.notLike]: '%협상에 의한 계약 상세정보보기%'
+    }
+  };
+}
+
 function normalizeKeywords(raw) {
   if (!raw) return [];
   const list = Array.isArray(raw) ? raw : String(raw).split(',');
@@ -333,6 +341,10 @@ function applySearchFilters(where, query) {
 
   if (query.source) {
     where.source_system = buildSourceSystemFilter(query.source);
+
+    if (query.source === 'seoul_board') {
+      where[Op.and].push(buildSeoulBoardNoiseExclusion());
+    }
   }
 
   if (query.type) where.notice_type = query.type;
@@ -499,6 +511,10 @@ router.get('/calendar/:year/:month', async (req, res) => {
 
     if (source) {
       where.source_system = buildSourceSystemFilter(source);
+
+      if (source === 'seoul_board') {
+        where[Op.and].push(buildSeoulBoardNoiseExclusion());
+      }
     }
 
     const list = await Notice.findAll({
