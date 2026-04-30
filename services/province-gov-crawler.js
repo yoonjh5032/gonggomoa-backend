@@ -280,6 +280,8 @@ function isGenericPortalTitle(title = '') {
     /^충청남도\s*누리집(?:\(홈페이지\))?$/i,
     /대한민국\s*중심에\s*서다\s*충청북도\s*홈페이지/,
     /^전북특별자치도$/i,
+    /^전북특별자치도\s*홈\s*전북소식\s*공고\/?고시\s*전북특별자치도$/i,
+    /전북특별자치도\s*홈\s*전북소식\s*공고\/?고시/i,
     /^도정마당$/i,
     /^알림마당$/i,
     /대외수상평가\s*-->/,
@@ -1188,6 +1190,35 @@ function parseDetailGeneric(html, detailUrl, source) {
   };
 }
 
+function parseDetailJeonbukBoard(html, detailUrl, source) {
+  const explicitTitle =
+    extractFieldValue(html, ['제목', '공고명', '고시공고명', '사업명']) || '';
+  const title = cleanText(explicitTitle) || extractTitle(html);
+  const bodyText = extractBodyText(html);
+  const publishedAt = extractPublishedAt(html);
+  const closingAt = extractClosingAt(html);
+  const attachments = extractAttachments(html, detailUrl);
+
+  const issuingOrg =
+    extractFieldValue(html, ['담당부서', '부서', '공고기관', '발주부서']) || `${source.district_name}청`;
+
+  const manager = extractFieldValue(html, ['담당자', '작성자']) || '';
+  const phone = extractFieldValue(html, ['전화번호', '연락처']) || '';
+  const noticeType = inferNoticeType(title, bodyText);
+
+  return {
+    title,
+    bodyText,
+    publishedAt,
+    closingAt,
+    attachments,
+    issuingOrg,
+    manager,
+    phone,
+    noticeType,
+  };
+}
+
 function parseDetailByType(html, detailUrl, source) {
   switch (source.parser_type) {
     case 'gwanak_bbsnew_list':
@@ -1202,6 +1233,7 @@ function parseDetailByType(html, detailUrl, source) {
     case 'chungbuk_gosi_list':
     case 'chungnam_province_list':
     case 'jeonbuk_board_list':
+      return parseDetailJeonbukBoard(html, detailUrl, source);
     case 'jeonnam_board_list':
     case 'gangwon_notification_list':
     default:
