@@ -183,6 +183,7 @@ function buildNoticeListCacheKey(params) {
   return JSON.stringify({
     q: params.q || '',
     source: params.source || '',
+    district: params.district || '',
     type: params.type || '',
     sortBy: params.sortBy || 'recent',
     days: params.days || 0,
@@ -196,6 +197,7 @@ function buildNoticeCountCacheKey(params) {
   return JSON.stringify({
     q: params.q || '',
     source: params.source || '',
+    district: params.district || '',
     type: params.type || '',
     days: params.days || 0,
     keywords: params.keywordList || []
@@ -233,20 +235,48 @@ function mapResponseSourceSystem(sourceSystem, requestedSource = '') {
   return sourceSystem;
 }
 
+function deriveSeoulDistrictLabel(detailUrl = '') {
+  const url = String(detailUrl || '');
+  if (/gwanak\.go\.kr/i.test(url)) return '관악구';
+  if (/gangbuk\.go\.kr/i.test(url)) return '강북구';
+  if (/guro\.go\.kr/i.test(url)) return '구로구';
+  if (/sdm\.go\.kr/i.test(url)) return '서대문구';
+  if (/seocho\.go\.kr/i.test(url)) return '서초구';
+  if (/yongsan\.go\.kr/i.test(url)) return '용산구';
+  if (/jungnang\.go\.kr/i.test(url)) return '중랑구';
+  if (/gangseo\.seoul\.kr/i.test(url)) return '강서구';
+  return '서울시·구청';
+}
+
+function buildSeoulDistrictCondition(district = '') {
+  switch (district) {
+    case '관악구':
+      return { detail_url: { [Op.like]: '%gwanak.go.kr%' } };
+    case '강북구':
+      return { detail_url: { [Op.like]: '%gangbuk.go.kr%' } };
+    case '구로구':
+      return { detail_url: { [Op.like]: '%guro.go.kr%' } };
+    case '서대문구':
+      return { detail_url: { [Op.like]: '%sdm.go.kr%' } };
+    case '서초구':
+      return { detail_url: { [Op.like]: '%seocho.go.kr%' } };
+    case '용산구':
+      return { detail_url: { [Op.like]: '%yongsan.go.kr%' } };
+    case '중랑구':
+      return { detail_url: { [Op.like]: '%jungnang.go.kr%' } };
+    case '강서구':
+      return { detail_url: { [Op.like]: '%gangseo.seoul.kr%' } };
+    default:
+      return null;
+  }
+}
+
 function deriveSourceLabel(n, requestedSource = '') {
   const detailUrl = String(n.detail_url || '');
   const publicSource = mapResponseSourceSystem(n.source_system, requestedSource);
 
   if (publicSource === 'seoul_board') {
-    if (/gwanak\.go\.kr/i.test(detailUrl)) return '관악구';
-    if (/gangbuk\.go\.kr/i.test(detailUrl)) return '강북구';
-    if (/guro\.go\.kr/i.test(detailUrl)) return '구로구';
-    if (/sdm\.go\.kr/i.test(detailUrl)) return '서대문구';
-    if (/seocho\.go\.kr/i.test(detailUrl)) return '서초구';
-    if (/yongsan\.go\.kr/i.test(detailUrl)) return '용산구';
-    if (/jungnang\.go\.kr/i.test(detailUrl)) return '중랑구';
-    if (/gangseo\.seoul\.kr/i.test(detailUrl)) return '강서구';
-    return '서울시·구청';
+    return deriveSeoulDistrictLabel(detailUrl);
   }
 
   if (publicSource === 'province_gov') {
@@ -266,18 +296,21 @@ function deriveSourceLabel(n, requestedSource = '') {
 }
 
 function toNoticeListItem(n, query = {}) {
+  const sourceLabel = deriveSourceLabel(n, query.source);
+  const issuingOrg = query.source === 'seoul_board' ? sourceLabel : n.issuing_org;
+
   return {
     id: n.id,
     title: n.title,
     notice_type: n.notice_type,
-    issuing_org: n.issuing_org,
+    issuing_org: issuingOrg,
     demanding_org: n.demanding_org,
     budget_formatted: n.budget_formatted,
     closing_at: n.closing_at ? new Date(n.closing_at).toISOString() : null,
     published_at: n.published_at ? new Date(n.published_at).toISOString() : null,
     opening_at: n.opening_at ? new Date(n.opening_at).toISOString() : null,
     source_system: mapResponseSourceSystem(n.source_system, query.source),
-    source_label: deriveSourceLabel(n, query.source),
+    source_label: sourceLabel,
     detail_url: n.detail_url || '',
     createdAt: n.createdAt ? new Date(n.createdAt).toISOString() : null,
     updatedAt: n.updatedAt ? new Date(n.updatedAt).toISOString() : null
@@ -287,6 +320,7 @@ function toNoticeListItem(n, query = {}) {
 function buildNoticeListQuery(req) {
   const q = normalizeText(req.query.q, 60);
   const source = normalizeText(req.query.source, 30);
+  const district = normalizeText(req.query.district, 20);
   const type = normalizeText(req.query.type, 20);
   const sortBy = req.query.sortBy === 'closing' ? 'closing' : 'recent';
   const keywordList = normalizeKeywords(req.query.keywords);
@@ -298,6 +332,7 @@ function buildNoticeListQuery(req) {
   return {
     q,
     source,
+    district,
     type,
     sortBy,
     keywordList,
@@ -344,6 +379,11 @@ function applySearchFilters(where, query) {
 
     if (query.source === 'seoul_board') {
       where[Op.and].push(buildSeoulBoardNoiseExclusion());
+
+      if (query.district) {
+        const districtCondition = buildSeoulDistrictCondition(query.district);
+        if (districtCondition) where[Op.and].push(districtCondition);
+      }
     }
   }
 
